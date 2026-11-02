@@ -214,9 +214,9 @@ fn void? Vm.get_iterator(&self, Value v, Value* state)
 		}
 		return;
 	}
-	if (v.is_nullish()) return self.throw_error(TYPE_ERROR, "%s is not iterable", self.describe(v))~;
+	if (v.is_nullish()) return self.not_iterable(v)~;
 	Value method = self.get(v, self.sym_iterator)!;
-	if (!method.is_function()) return self.throw_error(TYPE_ERROR, "%s is not iterable", self.describe(v))~;
+	if (!method.is_function()) return self.not_iterable(v)~;
 	Value iterator = self.call(method, v, {})!;
 	if (!iterator.is_object()) return self.throw_error(TYPE_ERROR, "Result of the Symbol.iterator method is not an object")~;
 	state[0] = iterator;

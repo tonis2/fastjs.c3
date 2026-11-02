@@ -943,7 +943,7 @@ fn Value? Vm.run(&self)
 				Value callee = r[a];
 				if (!callee.is_function())
 				{
-					return self.throw_error(TYPE_ERROR, construct ? "%s is not a constructor" : "%s is not a function", self.describe(callee))~;
+					return self.throw_error(TYPE_ERROR, construct ? "%s is not a constructor" : "%s is not a function", self.callee_text(f, pc, callee))~;
 				}
 				JsFunction* fun = (JsFunction*)callee.as_object();
 				// Arguments past the frame's registers must not be clobbered by a native's nested calls.
@@ -963,7 +963,7 @@ fn Value? Vm.run(&self)
 				}
 				if (construct)
 				{
-					if (!fun.proto.is_constructor()) return self.throw_error(TYPE_ERROR, "%s is not a constructor", self.describe(callee))~;
+					if (!fun.proto.is_constructor()) return self.throw_error(TYPE_ERROR, "%s is not a constructor", self.callee_text(f, pc, callee))~;
 					r[a + 1] = fun.proto.is_derived ? UNINITIALIZED : object_value(self.new_instance(callee)!);
 				}
 				else if (fun.proto.is_class_constructor)

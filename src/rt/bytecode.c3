@@ -186,6 +186,18 @@ struct CaptureSource
 }
 
 <*
+ What a call or iteration site looked like in the source, e.g. "o.foo", for error messages.
+*>
+struct SiteName
+{
+	uint pc;
+	String text;
+}
+
+// SiteName.text for a spread argument, whose error V8 words differently.
+const String SPREAD_ARGUMENT_SITE = "...";
+
+<*
  A compiled function. Owned by its Script; the constants hold heap strings, so a Script must be
  kept reachable while its functions can run.
 *>
@@ -203,6 +215,8 @@ struct FunctionProto
 	FunctionProto*[] protos;
 	CaptureSource[] captures;
 	Handler[] handlers;
+	// Sorted by pc; only read when a call or iteration fails.
+	SiteName[] site_names;
 	uint nparams;
 	// Function.length: parameters before the first default or rest.
 	uint length;
@@ -234,7 +248,33 @@ fn void FunctionProto.free(&self)
 	free(self.protos);
 	free(self.captures);
 	free(self.handlers);
+	foreach (n : self.site_names) free(n.text);
+	free(self.site_names);
 	free(self.name);
+}
+
+<*
+ How the source wrote the callee or iterable of the instruction at pc, or "" when unknown.
+*>
+fn String FunctionProto.site_name(&self, uint pc)
+{
+	usz lo = 0;
+	usz hi = self.site_names.len;
+	while (lo < hi)
+	{
+		usz mid = (lo + hi) / 2;
+		uint at = self.site_names[mid].pc;
+		if (at == pc) return self.site_names[mid].text;
+		if (at < pc)
+		{
+			lo = mid + 1;
+		}
+		else
+		{
+			hi = mid;
+		}
+	}
+	return "";
 }
 
 fn void FunctionProto.clear_ics(&self)

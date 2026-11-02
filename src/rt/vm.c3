@@ -566,7 +566,43 @@ fn JsObject*? Vm.new_instance(&self, Value constructor)
 }
 
 <*
- A short description of a value for error messages, e.g. "undefined" or "o.x".
+ How the call at pc wrote its callee ("o.foo"), or a description of the value when unknown.
+*>
+fn String Vm.callee_text(&self, Frame* f, uint pc, Value callee)
+{
+	String name = f.proto.site_name(pc - 1);
+	return name.len ? name : self.describe(callee);
+}
+
+<*
+ The TypeError for iterating v, named after the source when a for-of or spread is doing it.
+*>
+fn fault Vm.not_iterable(&self, Value v)
+{
+	String name;
+	bool destructuring;
+	if (self.frame_count)
+	{
+		Frame* f = &self.frames[self.frame_count - 1];
+		if (f.pc)
+		{
+			Op op = ins_op(f.proto.code[f.pc - 1]);
+			if (op == GETITER || op == APPENDSPREAD) name = f.proto.site_name(f.pc - 1);
+			// Destructuring is the unnamed GETITER, which V8 explains for objects.
+			destructuring = op == GETITER && !name.len && v.is_object() && !v.is_function();
+		}
+	}
+	if (destructuring) return self.throw_error(TYPE_ERROR, "object is not iterable (cannot read property Symbol(Symbol.iterator))");
+	if (name == SPREAD_ARGUMENT_SITE)
+	{
+		if (!v.is_nullish()) return self.throw_error(TYPE_ERROR, "Spread syntax requires ...iterable[Symbol.iterator] to be a function");
+		return self.throw_error(TYPE_ERROR, "%s is not iterable (cannot read property %s)", self.describe(v), self.describe(v));
+	}
+	return self.throw_error(TYPE_ERROR, "%s is not iterable", name.len ? name : self.describe(v));
+}
+
+<*
+ A short description of a value for error messages, e.g. "undefined", "\"text\"" or a function's name.
 *>
 fn String Vm.describe(&self, Value v)
 {

@@ -1,0 +1,37 @@
+// V8-style messages naming the callee or iterable as the source wrote it.
+const o = { a: { b: {} }, arr: [1], n: null, s: 'str' };
+const f = 5; let i = 0; const k = 'key';
+const cases = [
+  () => o.foo(),
+  () => o.a.b.c(),
+  () => o.arr[0](),
+  () => o.arr[i](),
+  () => o[k](),
+  () => o['lit'](),
+  () => f(),
+  () => o.n(),
+  () => o.a?.zz(),
+  () => (o.a)(),
+  () => o.s(),
+  () => new o.a(),
+  () => new f(),
+  () => new o.arr[0](),
+  () => (() => 1)()(),
+  () => o.a.b()(),
+  () => [1, 2][0](),
+  () => { for (const x of 5) {} },
+  () => { for (const x of o.a) {} },
+  () => { const [a] = o.a; },
+  () => { const [a] = 5; },
+  () => [...o.a],
+  () => f(...o.a),
+  () => o.foo(1, 2, 3),
+  () => o.a.b.c.d,
+  () => o.n.x,
+  () => o.n.x = 1,
+  () => undefined(),
+  () => null(),
+  () => class A extends f {},
+  () => { class B { m() { super.zz() } }; new B().m() },
+];
+for (const c of cases) { try { c() } catch (e) { console.log(e.constructor.name + ': ' + e.message) } }

@@ -803,7 +803,21 @@ All in `src/api/qjs.c3` (module `fastjs::qjs`), plus small VM hooks. Each gets `
    - Avoid `release(out)` when `out` isn't heap.
    - Make `wrap()` free; it already is in fastjs, so just confirm it.
 
-### Milestone 12 — V8-style error messages
+### Milestone 12 — V8-style error messages (done)
+- [x] Done 2026-11-02.
+  - Codegen records a `SiteName {pc, text}` for every call, `new`, for-of, array spread,
+    spread argument and `yield*`. `FunctionProto.site_names` is sorted by pc and searched only
+    when an error is thrown.
+  - `site_text` prints the callee the way V8's CallPrinter does:
+    - `o.a.b`, `o.arr[0]`, `o[k]`, `o.lit` for `o['lit']`, `o.a?.zz`, `f(...)`, `[1,2][0]`
+    - anything else is `(intermediate value)`
+  - `Vm.callee_text` serves CALL and NEW. `Vm.not_iterable` reads the top frame's pc, so it
+    names only GETITER/APPENDSPREAD sites, not natives such as `Array.from`. It also has V8's
+    wordings for spread arguments and for destructuring objects.
+  - `test/js/errors2.js` matches node for 31 forms.
+  - **Keep in mind for M15** (storing the pc less often): `not_iterable` needs `f.pc` current
+    at GETITER and APPENDSPREAD.
+- Original plan:
 
 - **Compile time:** codegen records `FunctionProto.call_names: CallName[] {uint pc; uint name_k}`
   for CALL, NEW, CALLSPREAD, NEWSPREAD and GETITER, rendering the callee AST the way V8's
@@ -1132,6 +1146,8 @@ See **Phases** above. Break each one down when it starts.
   - **Next:** milestone 11, the new embedding API.
 - 2026-11-02: Milestone 11 done (the new API). `c3c test`: 56 pass.
   - **Next:** milestone 12, error messages naming the callee.
+- 2026-11-02: Milestone 12 done (V8-style call and iteration errors). `test/js/run.sh`: 23 pass.
+  - **Next:** milestone 13, moving three.c3 to the new API on its local `fastjs` branch.
 
 **How to run things:**
 ```sh

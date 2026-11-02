@@ -50,6 +50,7 @@ struct FuncState
 	List {Value} consts;
 	List {FunctionProto*} protos;
 	List {Handler} handlers;
+	List {SiteName} site_names;
 	uint free_reg;
 	uint max_reg;
 	uint line;
@@ -386,7 +387,103 @@ fn void Codegen.begin_function(&self, FuncState* fs, FuncInfo* info)
 	fs.consts.init(mem);
 	fs.protos.init(mem);
 	fs.handlers.init(mem);
+	fs.site_names.init(mem);
 	self.fs = fs;
+}
+
+<*
+ Remember how the source wrote e, for the error if the instruction emitted next fails: the
+ callee of a call or the iterable of a for-of, the way V8 words it ("o.foo is not a function").
+*>
+fn void Codegen.name_site(&self, Node* e)
+{
+	DString out;
+	out.init(mem);
+	site_text(&out, e);
+	self.fs.site_names.push({ .pc = self.pc(), .text = out.copy_str(mem) });
+	out.free();
+}
+
+fn void Codegen.name_spread_argument(&self)
+{
+	self.fs.site_names.push({ .pc = self.pc(), .text = rt::SPREAD_ARGUMENT_SITE.copy(mem) });
+}
+
+fn void site_text(DString* out, Node* e)
+{
+	switch (e.kind)
+	{
+		case IDENT:
+			out.append(e.name);
+		case THIS:
+			out.append("this");
+		case NUMBER:
+			out.append(e.name);
+		case STRING:
+			out.appendf("\"%s\"", e.name);
+		case NULL:
+			out.append("null");
+		case TRUE:
+			out.append("true");
+		case FALSE:
+			out.append("false");
+		case OPTIONAL_CHAIN:
+			site_text(out, e.a);
+		case CALL:
+			site_text(out, e.a);
+			out.append("(...)");
+		case MEMBER:
+			site_text(out, e.a);
+			if (!e.flags.computed)
+			{
+				out.append(e.flags.optional ? "?." : ".");
+				out.append(e.name);
+				return;
+			}
+			if (e.flags.optional) out.append("?.");
+			switch (e.b.kind)
+			{
+				case STRING:
+					out.appendf(".%s", e.b.name);
+				case IDENT:
+				case NUMBER:
+				case MEMBER:
+				case CALL:
+				case THIS:
+					out.append('[');
+					site_text(out, e.b);
+					out.append(']');
+				default:
+					out.append("[...]");
+			}
+		case ARRAY:
+			foreach (el : e.list)
+			{
+				switch (el.kind)
+				{
+					case NUMBER:
+					case STRING:
+					case IDENT:
+					case NULL:
+					case TRUE:
+					case FALSE:
+						break;
+					default:
+						out.append("(intermediate value)");
+						return;
+				}
+			}
+			out.append('[');
+			foreach (i, el : e.list)
+			{
+				if (i) out.append(',');
+				site_text(out, el);
+			}
+			out.append(']');
+		default:
+			// V8's words for anything it doesn't print: super, function expressions, operators.
+			out.append("(intermediate value)");
+	}
 }
 
 fn void FuncState.free_parts(&self)
@@ -401,6 +498,8 @@ fn void FuncState.free_parts(&self)
 	self.consts.free();
 	self.protos.free();
 	self.handlers.free();
+	foreach (n : self.site_names) free(n.text);
+	self.site_names.free();
 }
 
 macro copy_list(list) => @clone_slice(list.array_view());
@@ -416,6 +515,8 @@ fn FunctionProto* Codegen.end_function(&self, FuncState* fs, Node* node, String 
 	p.consts = copy_list(fs.consts);
 	p.protos = copy_list(fs.protos);
 	p.handlers = copy_list(fs.handlers);
+	p.site_names = copy_list(fs.site_names);
+	fs.site_names.clear();
 	p.nparams = nparams;
 	foreach (param : node.list)
 	{
@@ -645,6 +746,8 @@ fn FunctionProto*? Codegen.compile_program(&self, Node* program)
 	p.consts = copy_list(fs.consts);
 	p.protos = copy_list(fs.protos);
 	p.handlers = copy_list(fs.handlers);
+	p.site_names = copy_list(fs.site_names);
+	fs.site_names.clear();
 	p.nregs = fs.max_reg + 1;
 	p.line = 1;
 	fs.protos.clear();
@@ -972,7 +1075,9 @@ fn void? Codegen.expr(&self, Node* e, uint dest)
 					case HOLE:
 						self.emit_abc(APPENDHOLE, dest);
 					case SPREAD:
-						self.emit_abc(APPENDSPREAD, dest, self.expr_any(el.a)!);
+						uint src = self.expr_any(el.a)!;
+						self.name_site(el.a);
+						self.emit_abc(APPENDSPREAD, dest, src);
 					default:
 						self.emit_abc(APPEND, dest, self.expr_any(el)!);
 				}
@@ -1412,7 +1517,9 @@ fn int? Codegen.arguments(&self, Node*[] args, uint base)
 			uint mark = self.fs.free_reg;
 			if (a.kind == SPREAD)
 			{
-				self.emit_abc(APPENDSPREAD, arr, self.expr_any(a.a)!);
+				uint src = self.expr_any(a.a)!;
+				self.name_spread_argument();
+				self.emit_abc(APPENDSPREAD, arr, src);
 			}
 			else
 			{
@@ -1485,6 +1592,7 @@ fn void? Codegen.call(&self, Node* e, uint dest)
 	if (e.flags.optional) self.chain_nil(base, e)!;
 	int argc = self.arguments(e.list, base)!;
 	self.fs.line = e.line;
+	self.name_site(callee);
 	if (argc < 0)
 	{
 		self.emit_abc(CALLSPREAD, base);
@@ -1503,6 +1611,7 @@ fn void? Codegen.construct(&self, Node* e, uint dest)
 	self.expr(e.a, base)!;
 	int argc = self.arguments(e.list, base)!;
 	self.fs.line = e.line;
+	self.name_site(e.a);
 	if (argc < 0)
 	{
 		self.emit_abc(NEWSPREAD, base);
@@ -1553,6 +1662,7 @@ fn void? Codegen.yield_star(&self, Node* e, uint dest)
 	uint base = self.alloc(4)!;
 	self.expr(e.a, base + 2)!;
 	self.fs.line = e.line;
+	self.name_site(e.a);
 	self.emit_abc(GETITER, base, base + 2, 1);
 	self.emit_abc(LOADUNDEF, base + 2);
 	self.emit((uint)rt::encode_asbx(LOADI, base + 3, 0));
@@ -1824,6 +1934,7 @@ fn void? Codegen.stmt_for_of(&self, Node* n)
 	self.fs.line = n.line;
 	if (n.kind == FOR_OF)
 	{
+		self.name_site(n.b);
 		self.emit_abc(GETITER, base, src);
 	}
 	else
