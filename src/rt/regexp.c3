@@ -114,6 +114,56 @@ struct ReParser
 	usz pos;
 	Regex* re;
 	String error;
+	// The u flag: a surrogate pair is one character, and \p{...} is a property.
+	bool unicode;
+}
+
+<*
+ Under the u flag, the low half of a surrogate pair whose high half c was just read: c becomes
+ the code point and the low half is consumed.
+*>
+fn uint ReParser.join_pair(&self, uint c)
+{
+	if (!self.unicode || c < 0xD800 || c > 0xDBFF || self.at_end()) return c;
+	uint d = self.peek();
+	if (d < 0xDC00 || d > 0xDFFF) return c;
+	self.pos++;
+	return 0x10000 + ((c - 0xD800) << 10) + (d - 0xDC00);
+}
+
+<*
+ After \p or \P: the {name} of a Unicode property, as its ranges, complemented for \P.
+*>
+fn void? ReParser.property_ranges(&self, ReClass* cls, bool negated)
+{
+	if (self.peek() != '{') return self.fail("invalid property name")~;
+	self.pos++;
+	DString name;
+	name.tinit();
+	while (!self.at_end() && self.peek() != '}')
+	{
+		uint c = self.peek();
+		if (c > 0x7F) return self.fail("invalid property name")~;
+		name.append((char)c);
+		self.pos++;
+	}
+	if (self.at_end()) return self.fail("invalid property name")~;
+	self.pos++;
+	UniProperty* prop = find_property(name.str_view());
+	if (!prop) return self.fail("invalid property name")~;
+	uint[] r = prop.ranges();
+	if (!negated)
+	{
+		for (usz i = 0; i < r.len; i += 2) cls.ranges.push({ r[i], r[i + 1] });
+		return;
+	}
+	uint next = 0;
+	for (usz i = 0; i < r.len; i += 2)
+	{
+		if (r[i] > next) cls.ranges.push({ next, r[i] - 1 });
+		next = r[i + 1] + 1;
+	}
+	if (next <= 0x10FFFF) cls.ranges.push({ next, 0x10FFFF });
 }
 
 fn ReNode* ReParser.node(&self, ReNodeKind kind)
@@ -321,7 +371,7 @@ fn ReNode*? ReParser.atom(&self)
 			return self.fail("nothing to repeat")~;
 		default:
 			ReNode* n = self.node(CHAR);
-			n.value = c;
+			n.value = self.join_pair(c);
 			return n;
 	}
 }
@@ -347,13 +397,13 @@ fn bool add_class_escape(ReClass* cls, uint c)
 			}
 		case 'D':
 			cls.ranges.push({ 0, '0' - 1 });
-			cls.ranges.push({ '9' + 1, 0xFFFF });
+			cls.ranges.push({ '9' + 1, 0x10FFFF });
 		case 'W':
 			cls.ranges.push({ 0, '0' - 1 });
 			cls.ranges.push({ '9' + 1, 'A' - 1 });
 			cls.ranges.push({ 'Z' + 1, '_' - 1 });
 			cls.ranges.push({ '_' + 1, 'a' - 1 });
-			cls.ranges.push({ 'z' + 1, 0xFFFF });
+			cls.ranges.push({ 'z' + 1, 0x10FFFF });
 		case 'S':
 			cls.ranges.push({ 0, 8 });
 			cls.ranges.push({ 14, ' ' - 1 });
@@ -365,7 +415,7 @@ fn bool add_class_escape(ReClass* cls, uint c)
 			cls.ranges.push({ 0x2030, 0x205E });
 			cls.ranges.push({ 0x2060, 0x2FFF });
 			cls.ranges.push({ 0x3001, 0xFEFE });
-			cls.ranges.push({ 0xFF00, 0xFFFF });
+			cls.ranges.push({ 0xFF00, 0x10FFFF });
 		default:
 			return false;
 	}
@@ -415,6 +465,23 @@ fn uint? ReParser.escape_char(&self, uint c)
 				if (d < 0) return self.fail("invalid unicode escape")~;
 				v = v * 16 + (uint)d;
 			}
+			// Under u, \uD83D\uDE00 is one character.
+			if (self.unicode && v >= 0xD800 && v <= 0xDBFF && self.pos + 6 <= self.src.len && self.src[self.pos] == '\\' && self.src[self.pos + 1] == 'u')
+			{
+				uint low = 0;
+				bool ok = true;
+				for (usz i = 2; i < 6; i++)
+				{
+					int d = hex_digit((char)self.src[self.pos + i]);
+					if (d < 0) ok = false;
+					low = low * 16 + (uint)(d < 0 ? 0 : d);
+				}
+				if (ok && low >= 0xDC00 && low <= 0xDFFF)
+				{
+					self.pos += 6;
+					return 0x10000 + ((v - 0xD800) << 10) + (low - 0xDC00);
+				}
+			}
 			return v;
 		case 'c':
 			uint letter = self.peek();
@@ -444,6 +511,18 @@ fn ReNode*? ReParser.escape_atom(&self)
 	}
 	ReClass cls;
 	cls.ranges.init(mem);
+	if (self.unicode && (c == 'p' || c == 'P'))
+	{
+		if (catch err = self.property_ranges(&cls, c == 'P'))
+		{
+			cls.ranges.free();
+			return err~;
+		}
+		ReNode* n = self.node(CLASS);
+		n.value = (uint)self.re.classes.len();
+		self.re.classes.push(cls);
+		return n;
+	}
 	if (add_class_escape(&cls, c))
 	{
 		ReNode* n = self.node(CLASS);
@@ -491,12 +570,17 @@ fn ReNode*? ReParser.class_atom(&self)
 			if (self.at_end()) return self.fail("\\ at end of pattern")~;
 			uint e = self.peek();
 			self.pos++;
+			if (self.unicode && (e == 'p' || e == 'P'))
+			{
+				self.property_ranges(&cls, e == 'P')!;
+				continue;
+			}
 			if (add_class_escape(&cls, e)) continue;
 			lo = e == 'b' ? 8 : self.escape_char(e)!;
 		}
 		else
 		{
-			lo = c;
+			lo = self.join_pair(c);
 		}
 		uint hi = lo;
 		if (self.peek() == '-' && self.pos + 1 < self.src.len && self.src[self.pos + 1] != ']')
@@ -512,7 +596,7 @@ fn ReNode*? ReParser.class_atom(&self)
 			}
 			else
 			{
-				hi = d;
+				hi = self.join_pair(d);
 			}
 			if (hi < lo) return self.fail("range out of order in character class")~;
 		}
@@ -724,7 +808,7 @@ fn Regex*? regex_compile(ushort[] pattern, String flags, String* error)
 	}
 	@pool()
 	{
-		ReParser p = { .src = pattern, .re = re };
+		ReParser p = { .src = pattern, .re = re, .unicode = re.unicode };
 		ReNode*? root = p.disjunction();
 		if (catch root)
 		{
@@ -837,24 +921,29 @@ fn int Matcher.run(&self, uint start_pc, uint start_sp)
 		switch (ins.op)
 		{
 			case CHAR:
-				ok = sp < s.len && self.same_unit(s.at(sp), ins.x);
+				uint w = 1;
+				ok = sp < s.len && self.same_unit(self.re.unicode ? code_point_at(s, sp, &w) : s.at(sp), ins.x);
 				if (ok)
 				{
-					sp++;
+					sp += w;
 					pc++;
 				}
 			case ANY:
-				ok = sp < s.len && (self.re.dotall || !is_line_terminator(s.at(sp)));
+				uint w = 1;
+				uint ch = 0;
+				if (sp < s.len) ch = self.re.unicode ? code_point_at(s, sp, &w) : s.at(sp);
+				ok = sp < s.len && (self.re.dotall || !is_line_terminator(ch));
 				if (ok)
 				{
-					sp++;
+					sp += w;
 					pc++;
 				}
 			case CLASS:
-				ok = sp < s.len && self.re.classes[ins.x].contains(s.at(sp), self.re.icase);
+				uint w = 1;
+				ok = sp < s.len && self.re.classes[ins.x].contains(self.re.unicode ? code_point_at(s, sp, &w) : s.at(sp), self.re.icase);
 				if (ok)
 				{
-					sp++;
+					sp += w;
 					pc++;
 				}
 			case SPLIT:

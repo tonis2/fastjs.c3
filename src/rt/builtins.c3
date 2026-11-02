@@ -282,31 +282,9 @@ fn Value? native_string_char_code_at(Vm* vm, Value this_value, Value[] args, JsF
 }
 
 // Case mapping for Latin-1, Greek and Cyrillic; full Unicode tables come with the string library.
-fn uint to_upper_cp(uint c)
-{
-	switch
-	{
-		case c >= 'a' && c <= 'z': return c - 32;
-		case c >= 0xE0 && c <= 0xFE && c != 0xF7: return c - 32;
-		case c == 0xFF: return 0x178;
-		case c == 0xB5: return 0x39C;
-		case c >= 0x3B1 && c <= 0x3C9 && c != 0x3C2: return c - 32;
-		case c == 0x3C2: return 0x3A3;
-		case c >= 0x430 && c <= 0x44F: return c - 32;
-		case c >= 0x450 && c <= 0x45F: return c - 80;
-		default: return c;
-	}
-}
-
 fn Value? native_string_to_upper(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
-	JsString* s = vm.this_string(this_value)!;
-	@pool()
-	{
-		ushort[] units = mem::temp_array(ushort, s.len);
-		for (uint i = 0; i < s.len; i++) units[i] = (ushort)to_upper_cp(s.at(i));
-		return string_value(vm.heap.string_from_units(units) ?? vm.oom()~!);
-	};
+	return string_value(vm.change_case(vm.this_string(this_value)!, true)!);
 }
 
 fn Value? native_string_value_of(Vm* vm, Value this_value, Value[] args, JsFunction* callee)

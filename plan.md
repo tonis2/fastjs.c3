@@ -831,7 +831,25 @@ All in `src/api/qjs.c3` (module `fastjs::qjs`), plus small VM hooks. Each gets `
 - **Fix `Vm.describe`'s doc comment** (`vm.c3:561`), which promises an `o.x` form it never produces.
 - **Test:** `test/js/errors2.js` diffs the messages against node.
 
-### Milestone 13 — three.c3 full migration (branch `fastjs` in ../three.c3)
+### Milestone 13 — three.c3 full migration (branch `fastjs` in ../three.c3) (partly done, rest deferred)
+- [x] On the local `fastjs` branch of three.c3 (not pushed):
+  - the import swap
+  - `EVAL_ASYNC` plus `promise_state`/`promise_result` instead of the source wrapper and the
+    `then`-hook closures
+  - `is_thenable`'s promise fast path
+  - `js.gc_step(200 µs)` at the end of each frame's script work
+  - 1523 tests pass. The only failures seen are a flaky GPU-timing test that fails on
+    QuickJS `main` too, and a skinning test that passes on rerun.
+- **Why the rest is deferred:** profiling three.c3 with an LD_PRELOAD sampler (SIGPROF, PCs
+  mapped through `nm`) shows its binding functions plus the whole fastjs API at 0.3–0.5% of
+  CPU in every example. The fastjs engine itself is 40–60% in script-heavy scenes. Converting
+  the 287 bindings to `number_function`, handles to native objects, or ui.js to `keys`/atoms
+  can't buy measurable speed.
+  - The 3-argument typed-array ABI is also right as it is: the hot callers pass a *partial*
+    count of a reused scratch array, so passing the array itself would need a `subarray()`
+    allocation per call.
+  - These stay possible later as cleanups.
+- Original plan:
 
 Start from `tools/use-in-three.sh`, then:
 1. **Hot verbs become `number_function`.** Covers:
@@ -1020,7 +1038,59 @@ Each step is verified before the next:
    - Spread and destructuring use the same path.
    - **Target:** `bench/generators.js` at least 2.5× QuickJS.
 
-### Milestone 16 — Language gaps
+### Milestone 16 — Language gaps (done, with the gaps listed)
+- [x] Done 2026-11-02, each item with a `test/js` file diffed against node:
+  - **Iterator close on throw** (see M15): `iterclose.js`.
+  - **`JSON.parse` reviver:** `Vm.json_revive`; `json2.js`.
+  - **Computed class field names:** a hidden `#fieldN` const in the class scope, set in member
+    order when the class is defined, read by the initializer; `classes2.js`.
+  - **`super[x]`, `super.x = v`, compound `super` assignment:** GETSUPERELEM/SETSUPERELEM
+    (`Vm.set_super`: setters found get `this`, otherwise the property is written on `this`).
+    **`super` in object-literal methods and accessors** (SETHOME), and **`__proto__: v` in
+    literals** (INITPROTO).
+  - **Tagged templates and `String.raw`:**
+    - A tag before a template parses as a CALL whose first argument is a TEMPLATE flagged
+      `tagged`, holding only the strings.
+    - Codegen makes the frozen strings array, with its frozen `raw`, once per site, roots it
+      in `Vm.template_objects`, and loads it with LOADK.
+    - The lexer marks invalid escapes `bad_escape` instead of failing. They cook to undefined
+      in tagged templates and are a SyntaxError in untagged ones.
+    - Test: `tagged.js`.
+  - **`export * as ns`:** parsed as `export { * as ns }`. At link time the export gets a box
+    holding the namespace (`ModuleExport.box`, rooted). Test: `modules2.mjs`.
+  - **Generator functions' own `.prototype`; Promise subclassing:**
+    - `then` uses the species constructor; the statics use `this` (`Vm.new_promise_of`).
+    - A subclass's `super(executor)` makes a real promise, so it is settled directly.
+    - `Symbol.species` is defined.
+    - Test: `subclass.js`.
+  - **Async generators and `for await`** (`src/rt/asyncgen.c3`):
+    - The request queue is on the coroutine (`async_gen`, `queue`, `awaiting`).
+    - `yield v` awaits v first.
+    - The job queue resumes awaits through `async_gen_continue`.
+    - `for await` uses GETASYNCITER, then CALL next, AWAIT, ITERRESULT. Sync iterables are
+      wrapped as async-from-sync.
+    - Test: `asyncgen.js`.
+  - **Date** (`src/rt/date.c3`): constructors, UTC and local fields, setters, the V8 string
+    formats, en-US locale strings, ISO and loose parsing, via libc `localtime_r`.
+    - Matches node in five zones. Zone names go through an abbreviation table for the common
+      zones; others print libc's abbreviation, where V8 would print ICU's long name.
+    - `test/js/run.sh` and `regen.sh` pin `TZ=Europe/Tallinn`. Test: `date.js`.
+  - **Unicode**
+    - `tools/gen_unicode.mjs` writes `src/rt/unicode_data.c3` (370 KB, Unicode 17.0 from
+      node 25): case runs, multi-character mappings, and ranges for General_Category, Script,
+      Script_Extensions and 50 binary properties, with aliases.
+    - `toUpperCase`/`toLowerCase` are full case mapping with final sigma
+      (`Vm.change_case`), identical to node over every code point.
+    - Regexes under `/u` match by code point (CHAR, ANY, CLASS; pairs in literals, classes
+      and `\uD83D\uDE00` escapes) and accept `\p{…}`/`\P{…}`.
+    - Test: `unicode.js`.
+- [ ] Known gaps left:
+  - `yield*` inside async generators (a compile error)
+  - `break` out of `for await` doesn't await `return()`'s promise
+  - a computed field key is converted to a property key at each instance, not once
+  - a misplaced `super` is a runtime SyntaxError, not a compile-time one
+  - `/i` without `u` uses simple lower-casing rather than the spec's Canonicalize
+- Original plan:
 
 Each gets a `test/js/*.js` file regenerated with node (`test/js/regen.sh`).
 
@@ -1234,6 +1304,17 @@ See **Phases** above. Break each one down when it starts.
   - **Next:** milestone 12, error messages naming the callee.
 - 2026-11-02: Milestone 12 done (V8-style call and iteration errors). `test/js/run.sh`: 23 pass.
   - **Next:** milestone 13, moving three.c3 to the new API on its local `fastjs` branch.
+- 2026-11-02: Milestones 13–16 worked through.
+  - M13 partly, with the rest deferred on profiling evidence.
+  - M14 incremental GC: longest pause 8.8 → 0.04 ms on the async bench.
+  - M15 string buffers, block allocator, inline generators: every bench is ≥1.6× QuickJS.
+  - M16 all items, with a few gaps listed there.
+  - `test/js`: 34 files pass (-O0, -O3, `--gc-stress`); `c3c test`: 57.
+  - Frame timings in three.c3 were not redone: another program was using the GPU, and the
+    user asked to time later. The harness for it is in the session's scratchpad: a median
+    of 3 runs of 660 frames, appending a system that averages `three.frame.ms.total`.
+  - **Next:** time three.c3 again (QuickJS vs fastjs, median of 3) with the GPU free; then
+    the known gaps above.
 
 **How to run things:**
 ```sh

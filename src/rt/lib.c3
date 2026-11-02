@@ -1039,28 +1039,9 @@ fn Value? native_string_at(Vm* vm, Value this_value, Value[] args, JsFunction* c
 	return string_value(vm.heap.substring(s, (uint)d, (uint)d + 1) ?? vm.oom()~!);
 }
 
-fn uint to_lower_cp(uint c)
-{
-	switch
-	{
-		case c >= 'A' && c <= 'Z': return c + 32;
-		case c >= 0xC0 && c <= 0xDE && c != 0xD7: return c + 32;
-		case c >= 0x391 && c <= 0x3A9 && c != 0x3A2: return c + 32;
-		case c >= 0x410 && c <= 0x42F: return c + 32;
-		case c >= 0x400 && c <= 0x40F: return c + 80;
-		default: return c;
-	}
-}
-
 fn Value? native_string_to_lower(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
-	JsString* s = vm.this_string(this_value)!;
-	@pool()
-	{
-		ushort[] units = mem::temp_array(ushort, s.len);
-		for (uint i = 0; i < s.len; i++) units[i] = (ushort)to_lower_cp(s.at(i));
-		return string_value(vm.heap.string_from_units(units) ?? vm.oom()~!);
-	};
+	return string_value(vm.change_case(vm.this_string(this_value)!, false)!);
 }
 
 <*
