@@ -127,8 +127,16 @@ fn double local_offset(double t, ZString* zone = null)
 	libc::Time_t secs = (libc::Time_t)math::floor(t / 1000.0);
 	libc::Tm tm;
 	if (!libc::localtime_r(&secs, &tm)) return 0;
-	if (zone) *zone = (ZString)tm.tm_zone;
-	return (double)tm.tm_gmtoff * 1000.0;
+	$if env::WIN32:
+		// The Windows Tm has neither tm_gmtoff nor tm_zone: read the offset off the broken-down
+		// local time (its wall clock read as UTC, minus the real UTC), and leave the zone unnamed.
+		long local_secs = days_from_civil((long)tm.tm_year + 1900, (long)tm.tm_mon + 1, (long)tm.tm_mday) * 86400
+			+ (long)tm.tm_hour * 3600 + (long)tm.tm_min * 60 + (long)tm.tm_sec;
+		return (double)(local_secs - (long)secs) * 1000.0;
+	$else
+		if (zone) *zone = (ZString)tm.tm_zone;
+		return (double)tm.tm_gmtoff * 1000.0;
+	$endif
 }
 
 fn double local_time(double t) => t + local_offset(t);
