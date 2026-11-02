@@ -2,7 +2,7 @@
  A ready-made module loader: `import` confined to one directory, plus an
  embedded namespace for modules built into the binary.
 
- `Context.on_modules` is the raw surface — two callbacks and an opaque — and
+ `Engine.on_modules` is the raw surface — two callbacks and an opaque — and
  every consumer that wired it up wrote the same three things: a resolver that
  keeps specifiers inside one root, a reader that answers with a file's bytes,
  and somewhere for the entry module's own name to come from. This file is that
@@ -49,7 +49,7 @@
  API by virtue of existing, and a script that reached one would be a script
  that breaks on the next refactor of a file it cannot see.
 *>
-module fastjs::qjs;
+module fastjs::js;
 
 import std::io;
 import std::io::file;
@@ -242,7 +242,7 @@ struct ModuleLoader
 <*
  Wire the hooks into the engine. `self` must stay put from here on.
 *>
-fn void ModuleLoader.install(&self, Context js)
+fn void ModuleLoader.install(&self, Engine* js)
 {
 	self.hooks = {
 		.normalize = &loader_normalize,

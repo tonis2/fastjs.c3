@@ -258,6 +258,7 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 	foreach (p : self.error_protos) mark_ptr(stack, p);
 	foreach (v : self.slots) mark_value(stack, v);
 	foreach (v : self.roots) mark_value(stack, v);
+	foreach (v : self.host_roots) mark_value(stack, v);
 	foreach (v : self.template_objects) mark_value(stack, v);
 	foreach (c : self.native_classes) mark_ptr(stack, c.proto);
 	mark_ptr(stack, self.heap.null_root);
@@ -454,7 +455,7 @@ fn void Vm.finish_marking(&self)
 	usz allocations = max((heap.threshold > live ? heap.threshold - live : 0) / average, (usz)1);
 	heap.sweep_ratio = (uint)min(max(heap.blocks / allocations + 1, (usz)2), (usz)64);
 	heap.at_limit = heap.limit && live >= heap.limit;
-	if (self.gc_trace) io::eprintfn("fastjs gc #%d: remark %.3f ms (mark %.3f), live %d KiB, next at %d KiB, %d blocks, sweep ratio %d, %d host roots", self.gc_count, total_ns / 1e6, marked_ns / 1e6, live / 1024, heap.threshold / 1024, heap.blocks, heap.sweep_ratio, self.roots.len());
+	if (self.gc_trace) io::eprintfn("fastjs gc #%d: remark %.3f ms (mark %.3f), live %d KiB, next at %d KiB, %d blocks, sweep ratio %d, %d host roots", self.gc_count, total_ns / 1e6, marked_ns / 1e6, live / 1024, heap.threshold / 1024, heap.blocks, heap.sweep_ratio, self.host_roots.len() - self.host_free.len());
 }
 
 <*

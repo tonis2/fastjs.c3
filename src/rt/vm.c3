@@ -185,16 +185,17 @@ struct Vm
 	List {Script*} scripts;
 	// Where console output goes; the test runner captures it.
 	DString* output;
-	// Values the host keeps alive (handles).
+	// Values kept alive by natives across a call that can collect, pushed and popped as a stack.
 	List {Value} roots;
+	// Values the embedder holds (fastjs::Root): a slot table, with freed slots on host_free.
+	List {Value} host_roots;
+	List {uint} host_free;
 	// Each tagged template site's strings array, made once at compile time and kept forever.
 	List {Value} template_objects;
 	// Functions whose inline caches still need clearing of dead shapes (see scan_ics).
 	List {FunctionProto*} ic_scan;
 	// Kinds of host objects, by id (see host.c3).
 	List {NativeClass*} native_classes;
-	// A fast host function raised an exception (see native_fast_call).
-	bool host_raised;
 	// Native functions currently on the C stack; collection waits until there are none.
 	uint native_depth;
 	usz gc_min_threshold;
@@ -239,6 +240,8 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.slot_const.init(mem);
 	self.scripts.init(mem);
 	self.roots.init(mem);
+	self.host_roots.init(mem);
+	self.host_free.init(mem);
 	self.native_classes.init(mem);
 	self.ic_scan.init(mem);
 	self.template_objects.init(mem);
@@ -273,6 +276,8 @@ fn void Vm.free(&self)
 	}
 	self.scripts.free();
 	self.roots.free();
+	self.host_roots.free();
+	self.host_free.free();
 	foreach (n : self.owned_names) free(n);
 	self.owned_names.free();
 	foreach (e : self.regex_cache)

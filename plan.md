@@ -142,6 +142,8 @@ Key design points:
 
 ## Embedding API — drop-in for `qjs`
 
+> Superseded by Milestone 18: `fastjs::qjs` is gone; the API is `fastjs::js` (`src/api/`).
+
 Mirror the existing signatures in `quickjs.c3/src/quickjs.c3`:
 - runtime: `open(memory_limit, stack_limit)`, `close`, `eval(source, name, EVAL_GLOBAL|EVAL_MODULE)`
 - errors: `exception`, `raise`, `error`
@@ -1194,6 +1196,59 @@ Each gets a `test/js/*.js` file regenerated with node (`test/js/regen.sh`).
     - Record node's Unicode version in the generated file.
 
 
+### Milestone 18 — Native embedding API; three.c3 without QuickJS (fastjs side done)
+- [x] `src/api/qjs.c3` (the QuickJS-shaped API) and the fast-call path (`number_function`,
+      `number_method`, `host_raised`) are deleted. The embedding API is module `fastjs::js`:
+  - `engine.c3`:
+    - `Engine` (`inline Vm`): `open`/`close` or `init`/`free`, and `eval(source, name, SCRIPT|ASYNC|MODULE)`
+    - errors: `take_error`, `error_text`, `fail`/`fail_with` (return a `fault`, so
+      `return js.fail("…")~;`)
+    - `get`/`set`/`has`/`accessor` macros taking a `Key`, a `String` or an index
+    - `keys` and `@each(obj; String name, Value v)`
+    - `string`/`object`/`array`/`numbers`/`push`, `json`/`from_json`, views and buffers
+    - `promise_state`/`promise_result`, jobs, `gc_step`, interrupts and module hooks
+  - **Values are not owned.** Inside a host function nothing is collected. Outside one, a
+    Value is good until the next call that can run JS or collect. `Root hold(v)` / `held` /
+    `drop` keep one longer, in `Vm.host_roots`: a slot table with a free list, so dropping is
+    O(1) (the qjs layer searched linearly). It is separate from the stack-like `Vm.roots`
+    natives push and pop.
+  - Host classes: `class(name, finalizer)`, `instance`, `data_of`, `set_data`.
+  - `bind.c3`: **typed host functions.**
+    - `js.@bind(target, "name", &func, host)`, `@function`, `@method(cls, …)` and `@getter`
+      reflect `$Typeof(&func)::params`/`::returns` at compile time. They generate one
+      `NativeFn` per function that converts each argument by its parameter type, recursing once
+      per parameter through a vararg macro (`@invoke`), so any arity works (tested at 21).
+    - Parameters that take no JS argument: the host pointer type, `Engine*` and `Call*`.
+    - Built-in conversions: numbers, integers (NaN → 0), bool, String (tmem), Value, typed-array
+      slices checked by element type, `char[]` bytes, and `Opt {T}` (`opt.c3`) for "given or not".
+    - Any type with `fn void? T.from_js(&self, Call* c, int at)` / `fn Value? T.to_js(&self, Engine*)`
+      converts too; that is how a host adds its own vectors and handles.
+    - Argument errors are TypeErrors naming the function and the argument: "sum: argument 1
+      must be a Float32Array, not object".
+    - A `@pool` only wraps calls where a String crosses.
+  - `HostFn = fn Value?(Call* c)` is the raw form, for anything unusual.
+- **Crossing cost** (`bench/crossing`, ns per call above the empty loop):
+
+  | call | ns |
+  |---|---|
+  | `@bind` typed, `H.typed(i, 1)` | 15.6 |
+  | `@method`, `t.get(i)` | 14.2 |
+  | raw `HostFn` | 15.4 |
+  | JS arrow, `H.js(i, 1)` | 22 |
+
+  The deleted number functions cost the same (14.8), with no typing or conversions to show for
+  it.
+- **Tests:** `api_test` (13 tests) is rewritten on the new API, with typed glue for every
+  parameter kind, converters, methods, getters, roots and slot reuse.
+- [ ] three.c3 (branch `fastjs`), per `~/.claude/plans/twinkling-crunching-sunbeam.md` Part B:
+  - QuickJS submodule replaced by `lib/fastjs.c3l`
+  - runtime on `Engine`; bindings as typed functions; Node/Asset native handles; wire formats
+    without the QuickJS workarounds
+  - prelude decorators; the game examples rewritten
+  - `tools/use-in-three.sh` is deleted (fastjs is a submodule there now).
+  - `bench/qjsrun` keeps QuickJS as the benchmark baseline. It builds against three.c3's
+    `lib/quickjs.c3l`, so build it from three.c3's main checkout.
+
 ### Order and checkpoints
 
 | Order | Milestone | Commit and push fastjs after |
@@ -1416,3 +1471,9 @@ c3c build lexcheck && T=../three.c3 && ./build/lexcheck $T/examples/*.js $T/src/
   freed as a String. Return `str_view().copy(allocator)`, from a tmem DString in a `@pool`.
 - `nextcase RET;` jumps to another case of the same switch; the interpreter uses it to share
   RET's frame-popping code with GENSTART and AWAIT.
+- 2026-11-02: M18, fastjs side. The `qjs` compatibility layer is replaced by the native
+  `fastjs::js` API: an `Engine` without ownership rules, O(1) `Root`s, host classes, and typed
+  host functions generated from C3 signatures by compile-time reflection.
+  - `c3c test`: 60 pass. test/js: 39/39 at -O0 and at -O3 --safe=no, each with `--gc-stress`.
+    Benches unchanged.
+  - A typed host call is 14–16 ns, cheaper than calling a JS arrow function.
