@@ -165,6 +165,8 @@ struct Vm
 	Value sym_iterator;
 	Value sym_async_iterator;
 	Value sym_species;
+	Value sym_to_primitive;
+	JsObject* date_proto;
 	// The Promise constructor, which derived promises of plain ones are made with.
 	Value promise_ctor;
 	JsObject* async_generator_proto;

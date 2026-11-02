@@ -20,9 +20,11 @@ fn bool truthy(Value v)
 
  @return? THROWN
 *>
-fn Value? Vm.to_primitive(&self, Value v, bool prefer_string = false)
+fn Value? Vm.to_primitive(&self, Value v, bool prefer_string = false, bool default_hint = false)
 {
 	if (!v.is_object()) return v;
+	// With no hint (`+`, `==`), a Date is a string, as its Symbol.toPrimitive says.
+	if (default_hint && v.as_object().kind == DATE) prefer_string = true;
 	Value first = prefer_string ? self.atoms.to_string : self.atoms.value_of;
 	Value second = prefer_string ? self.atoms.value_of : self.atoms.to_string;
 	foreach (name : (Value[2]){ first, second })
@@ -203,8 +205,8 @@ fn Value? Vm.add(&self, Value a, Value b)
 {
 	if (a.is_number() && b.is_number()) return double_value(a.as_number() + b.as_number());
 	if (a.is_string() && b.is_string()) return string_value(self.heap.concat(a.as_string(), b.as_string()) ?? self.oom()~);
-	Value pa = self.to_primitive(a)!;
-	Value pb = self.to_primitive(b)!;
+	Value pa = self.to_primitive(a, false, true)!;
+	Value pb = self.to_primitive(b, false, true)!;
 	if (pa.is_string() || pb.is_string())
 	{
 		JsString* sa = self.to_string(pa)!;

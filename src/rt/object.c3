@@ -57,6 +57,8 @@ enum ObjectKind : char
 	PROXY,
 	// A JsNative: an object carrying an embedding host's data.
 	NATIVE,
+	// A JsDate.
+	DATE,
 }
 
 struct JsObject

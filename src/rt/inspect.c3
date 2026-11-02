@@ -202,6 +202,10 @@ fn String? Vm.format_value(&self, InspectCtx* ctx, Value v, int recurse)
 				if (f.proto && f.proto.is_generator) tag = "GeneratorFunction";
 				base = name.len ? string::tformat("[%s: %s]", tag, name) : string::tformat("[%s (anonymous)]", tag);
 			}
+		case DATE:
+			double t = ((JsDate*)o).time;
+			if (t != t) return "Invalid Date";
+			return self.date_string(t, ISO)!.tutf8();
 		case REGEXP:
 			JsRegExp* re = (JsRegExp*)o;
 			return string::tformat("/%s/%s", re.source.as_string().tutf8(), re.flags.as_string().tutf8());

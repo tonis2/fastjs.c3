@@ -271,6 +271,8 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 	mark_value(stack, self.sym_iterator);
 	mark_value(stack, self.sym_async_iterator);
 	mark_value(stack, self.sym_species);
+	mark_value(stack, self.sym_to_primitive);
+	mark_ptr(stack, self.date_proto);
 	mark_value(stack, self.promise_ctor);
 }
 

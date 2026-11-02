@@ -2,6 +2,8 @@
 # Run every test/js/*.js with build/fjs and compare its output with the .out file node produced.
 # Build first: c3c build fjs. FJS_FLAGS=--gc-stress runs every test with a collection at each safe point.
 cd "$(dirname "$0")/../.."
+# Local time in date.js depends on the zone; pin one with an offset and daylight saving.
+export TZ=Europe/Tallinn
 pass=0
 fail=0
 for f in test/js/*.js test/js/*.mjs; do

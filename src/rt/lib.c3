@@ -2018,10 +2018,6 @@ fn Value? native_boolean_to_string(Vm* vm, Value this_value, Value[] args, JsFun
 
 fn Value? native_boolean_value_of(Vm* vm, Value this_value, Value[] args, JsFunction* callee) => this_value;
 
-fn Value? native_date_now(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
-{
-	return number(math::floor((double)time::now().to_seconds() * 1000.0));
-}
 
 fn Value? native_performance_now(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
@@ -2042,6 +2038,8 @@ fn void? Vm.init_lib(&self)
 	self.define_value(symbol_ctor, "asyncIterator", self.sym_async_iterator, {})!;
 	self.sym_species = self.new_symbol(self.str_value("Symbol.species") ?? UNDEFINED)!;
 	self.define_value(symbol_ctor, "species", self.sym_species, {})!;
+	self.sym_to_primitive = self.new_symbol(self.str_value("Symbol.toPrimitive") ?? UNDEFINED)!;
+	self.define_value(symbol_ctor, "toPrimitive", self.sym_to_primitive, {})!;
 	self.define_native(self.symbol_proto, "toString", &native_symbol_to_string, 0)!;
 	self.define_getter(self.symbol_proto, "description", &native_symbol_description)!;
 
@@ -2196,9 +2194,7 @@ fn void? Vm.init_lib(&self)
 	self.define_native(self.boolean_proto, "toString", &native_boolean_to_string, 0)!;
 	self.define_native(self.boolean_proto, "valueOf", &native_boolean_value_of, 0)!;
 
-	JsObject* date = h.new_object(self.object_proto)!;
-	self.define_value(global, "Date", object_value(date))!;
-	self.define_native(date, "now", &native_date_now, 0)!;
+	self.init_date()!;
 	JsObject* performance = h.new_object(self.object_proto)!;
 	self.define_value(global, "performance", object_value(performance))!;
 	self.define_native(performance, "now", &native_performance_now, 0)!;
