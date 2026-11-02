@@ -329,6 +329,15 @@ fn void JsArray.reserve(&self, uint capacity)
 	self.cap = cap;
 }
 
+<*
+ Freeze an array whose named properties were all added non-writable already.
+*>
+fn void freeze_array(JsArray* a)
+{
+	a.frozen = true;
+	a.frozen_extensions = true;
+}
+
 fn void JsArray.push(&self, Value v)
 {
 	self.reserve(self.length + 1);

@@ -586,7 +586,32 @@ fn Node*? Parser.parse_export(&self)
 		case at.kind == STAR:
 			// export * from 'x': re-export everything x exports except its default.
 			self.advance()!;
-			if (self.at_word("as")) return self.fail("'export * as name' is not supported")~;
+			if (self.at_word("as"))
+			{
+				// export * as ns from 'x' is export { * as ns } from 'x': an export whose
+				// imported name is "*", the namespace.
+				self.advance()!;
+				if (self.tok.kind != IDENT && !self.tok.kind.is_keyword() && self.tok.kind != STRING) return self.unexpected()~;
+				Node* spec = self.node(EXPORT_SPEC, &at);
+				spec.a = self.ident_from(&at);
+				spec.a.name = "*";
+				if (self.tok.kind == STRING)
+				{
+					spec.name = self.module_specifier()!.name;
+				}
+				else
+				{
+					spec.name = self.text();
+					self.advance()!;
+				}
+				self.expect_word("from")!;
+				n.name = self.module_specifier()!.name;
+				sz m = self.scratch.len();
+				self.scratch.push(spec);
+				n.list = self.finish(m);
+				self.consume_semicolon()!;
+				break;
+			}
 			self.expect_word("from")!;
 			n.name = self.module_specifier()!.name;
 			n.flags.delegate = true;
@@ -1389,7 +1414,28 @@ fn Node*? Parser.parse_suffixes(&self, Node* e, bool allow_call)
 				e = call;
 			case TEMPLATE:
 			case TEMPLATE_HEAD:
-				return self.fail("tagged templates are not supported")~;
+				// tag`a${x}b` is a call: tag(strings, x), strings being the template object.
+				if (chain) return self.fail("tagged templates can't follow an optional chain")~;
+				Node* call = self.node_at(CALL, e);
+				call.a = e;
+				Node* t = self.parse_template_raw()!;
+				Node* strings = self.node_at(TEMPLATE, t);
+				strings.flags.tagged = true;
+				sz m = self.scratch.len();
+				self.scratch.push(strings);
+				sz parts = self.scratch.len();
+				foreach (i, piece : t.list)
+				{
+					if (i % 2 == 1) self.scratch.push(piece);
+				}
+				// The strings come out of the same scratch list, after the arguments.
+				foreach (i, piece : t.list)
+				{
+					if (i % 2 == 0) self.scratch.push(piece);
+				}
+				strings.list = self.finish(parts + (t.list.len / 2));
+				call.list = self.finish(m);
+				e = call;
 			default:
 				break LOOP;
 		}
@@ -1576,6 +1622,19 @@ fn Node*? Parser.parse_parenthesized(&self)
 
 fn Node*? Parser.parse_template(&self)
 {
+	Node* t = self.parse_template_raw()!;
+	foreach (i, piece : t.list)
+	{
+		if (i % 2 == 0 && piece.flags.bad_escape)
+		{
+			return self.fail("invalid escape sequence in a template")~;
+		}
+	}
+	return t;
+}
+
+fn Node*? Parser.parse_template_raw(&self)
+{
 	Token t = self.tok;
 	Node* n = self.node(TEMPLATE, &t);
 	sz m = self.scratch.len();
@@ -1604,6 +1663,7 @@ fn Node* Parser.template_part(&self, Token* t)
 	Node* part = self.node(TEMPLATE_PART, t);
 	part.name = t.raw(self.src);
 	part.flags.escaped = t.escaped;
+	part.flags.bad_escape = t.bad_escape;
 	return part;
 }
 

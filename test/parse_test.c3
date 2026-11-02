@@ -107,7 +107,7 @@ fn void templates_and_regex() @test
 	check("x = /a\\/b[/]/gi.test(y);", "(x = /a\\/b[/]/gi.test(y));");
 	check("a / b / c;", "((a / b) / c);");
 	check("f(/=/);", "f(/=/);");
-	check_error("tag`x`;", "tagged templates are not supported");
+	check_error("const s = `\\unicode`;", "invalid escape sequence in a template");
 }
 
 fn void classes() @test
@@ -166,7 +166,7 @@ fn void modules() @test
 	check("export { a, b as c };", "export {a, b as c};", true);
 	check("const x = await f();", "const x = (await f());", true);
 	check_error("import a from 'b';", "'import' is only allowed at the top level of a module");
-	check_error("export * as ns from 'b';", "'export * as name' is not supported", true);
+	check_error("export * as from 'b';", "expected 'from' but found ''b''", true);
 }
 
 fn void dropped_features() @test

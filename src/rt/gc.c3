@@ -241,6 +241,7 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 			for (usz i = 0; i < m.cells.len; i++) mark_ptr(stack, m.boxes[i]);
 		}
 		mark_ptr(stack, m.function);
+		foreach (e : m.exports) mark_ptr(stack, e.box);
 		mark_value(stack, m.namespace);
 		mark_value(stack, m.promise);
 	}
@@ -255,6 +256,7 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 	foreach (p : self.error_protos) mark_ptr(stack, p);
 	foreach (v : self.slots) mark_value(stack, v);
 	foreach (v : self.roots) mark_value(stack, v);
+	foreach (v : self.template_objects) mark_value(stack, v);
 	foreach (c : self.native_classes) mark_ptr(stack, c.proto);
 	mark_ptr(stack, self.heap.null_root);
 	mark_ptr(stack, self.symbol_proto);

@@ -100,6 +100,10 @@ bitstruct NodeFlags : uint
 	// A class's constructor function, and whether that class has `extends`.
 	bool class_constructor;
 	bool derived;
+	// TEMPLATE_PART: an invalid escape (see Token.bad_escape). TEMPLATE: the strings of a
+	// tagged template, the first argument of the CALL it became.
+	bool bad_escape;
+	bool tagged;
 }
 
 struct Node

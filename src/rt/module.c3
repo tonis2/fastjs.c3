@@ -36,6 +36,8 @@ struct ModuleExport
 	uint cell;
 	uint request;
 	String import_name;
+	// `export * as name from`: the box holding the other module's namespace, made at link time.
+	Box* box;
 }
 
 <*
@@ -130,6 +132,7 @@ fn Box* Vm.resolve_export(&self, ModuleRecord* m, String name, uint depth = 0)
 	{
 		if (e.name != name) continue;
 		if (!e.indirect) return m.boxes[e.cell];
+		if (e.import_name == "*") return e.box;
 		return self.resolve_export(m.deps[e.request], e.import_name, depth + 1);
 	}
 	if (name == "default") return null;
@@ -170,6 +173,12 @@ fn void? Vm.link_module(&self, ModuleRecord* root)
 			box.value = UNINITIALIZED;
 			m.boxes[i] = box;
 		}
+		foreach (&e : m.exports)
+		{
+			if (!e.indirect || e.import_name != "*") continue;
+			e.box = self.heap.alloc(BOX, Box::size) ?? self.oom()~!;
+			e.box.value = UNINITIALIZED;
+		}
 	}
 	foreach (m : todo)
 	{
@@ -190,6 +199,16 @@ fn void? Vm.link_module(&self, ModuleRecord* root)
 				return self.throw_error(SYNTAX_ERROR, "The requested module '%s' does not provide an export named '%s'", m.requests[c.request], c.import_name)~;
 			}
 			m.boxes[i] = box;
+		}
+	}
+	// Namespaces re-exported with `export * as`, once every box they read exists.
+	foreach (m : todo)
+	{
+		foreach (e : m.exports)
+		{
+			if (!e.box) continue;
+			e.box.value = self.module_namespace(m.deps[e.request])!;
+			self.heap.touch(e.box);
 		}
 	}
 	foreach (m : todo)

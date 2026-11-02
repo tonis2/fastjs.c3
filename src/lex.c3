@@ -134,6 +134,9 @@ struct Token
 	bool nl_before;
 	// A string or template piece containing backslash escapes, so it must be cooked.
 	bool escaped;
+	// A template piece with an escape that is no escape, e.g. `\unicode`: an error, except in
+	// a tagged template, where that piece's cooked string is undefined.
+	bool bad_escape;
 	uint start;
 	uint end;
 	uint line;
@@ -706,7 +709,12 @@ fn void? Lexer.scan_template(&self, Token* tok, bool opening)
 				return;
 			case '\\':
 				tok.escaped = true;
-				self.scan_escape()!;
+				uint at = self.pos;
+				if (catch self.scan_escape())
+				{
+					tok.bad_escape = true;
+					self.pos = at + 2 <= (uint)self.src.len ? at + 2 : (uint)self.src.len;
+				}
 			case '\r':
 				self.pos++;
 				if (self.peek() == '\n') self.pos++;

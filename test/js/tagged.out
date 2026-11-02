@@ -1,0 +1,8 @@
+{"strings":["a","b","c"],"raw":["a","b","c"],"values":[1,"x"],"frozen":true}
+{"strings":["\n","\t"],"raw":["\\n","\\t"],"values":[2],"frozen":true} {"strings":[""],"raw":[""],"values":[],"frozen":true} {"strings":["",""],"raw":["",""],"values":[3],"frozen":true}
+a\nb2A x1y2z
+{"strings":[null," fine A"],"raw":["bad \\unicode and \\xZZ "," fine \\x41"],"values":[0],"frozen":true}
+true false
+ox|y5 op|q6
+<a href="[u]">[t]</a>
+{"strings":["line1\nline2"],"raw":["line1\nline2"],"values":[],"frozen":true}

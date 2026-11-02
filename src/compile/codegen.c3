@@ -1191,8 +1191,60 @@ fn void? Codegen.expr(&self, Node* e, uint dest)
 
 const uint MAX_CONCAT = 32;
 
+<*
+ A tagged template's first argument: the frozen array of its cooked strings (undefined where an
+ escape was invalid), with the frozen array of raw ones as `raw`. Made once per site, as the
+ spec wants, and rooted in the VM.
+*>
+fn Value? Codegen.template_object(&self, Node* e)
+{
+	Vm* vm = self.vm;
+	Heap* h = &vm.heap;
+	JsArray* cooked = h.new_array(vm.array_proto, (uint)e.list.len) ?? self.fail(e, "out of memory")~!;
+	vm.template_objects.push(rt::object_value(cooked));
+	JsArray* raw = h.new_array(vm.array_proto, (uint)e.list.len) ?? self.fail(e, "out of memory")~!;
+	foreach (part : e.list)
+	{
+		cooked.push(part.flags.bad_escape ? rt::UNDEFINED : self.string_const(part.name, part.flags.escaped, true)!);
+		raw.push(self.raw_string(part.name)!);
+	}
+	rt::freeze_array(raw);
+	PropFlags hidden = {};
+	cooked.add(h, vm.atoms.raw, rt::object_value(raw), hidden) ?? self.fail(e, "out of memory")~!;
+	rt::freeze_array(cooked);
+	return rt::object_value(cooked);
+}
+
+<*
+ A template piece's raw text, with its line endings (CR LF, CR) made LF as the spec says.
+*>
+fn Value? Codegen.raw_string(&self, String text)
+{
+	Heap* h = &self.vm.heap;
+	if (!text.contains("\r")) return rt::string_value(h.intern(h.string_from_utf8(text) ?? self.fail(null, "string too long")~!));
+	DString out;
+	out.init(mem);
+	defer out.free();
+	for (usz i = 0; i < text.len; i++)
+	{
+		if (text[i] != '\r')
+		{
+			out.append(text[i]);
+			continue;
+		}
+		out.append('\n');
+		if (i + 1 < text.len && text[i + 1] == '\n') i++;
+	}
+	return rt::string_value(h.intern(h.string_from_utf8(out.str_view()) ?? self.fail(null, "string too long")~!));
+}
+
 fn void? Codegen.template(&self, Node* e, uint dest)
 {
+	if (e.flags.tagged)
+	{
+		self.emit_abx(LOADK, dest, self.const_index(self.template_object(e)!)!);
+		return;
+	}
 	Value first = self.string_const(e.list[0].name, e.list[0].flags.escaped, true)!;
 	if (e.list.len == 1)
 	{

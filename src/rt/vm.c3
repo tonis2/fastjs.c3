@@ -81,6 +81,7 @@ enum ErrorKind : char
 *>
 struct Atoms
 {
+	Value raw;
 	Value length;
 	Value prototype;
 	Value constructor;
@@ -178,6 +179,8 @@ struct Vm
 	DString* output;
 	// Values the host keeps alive (handles).
 	List {Value} roots;
+	// Each tagged template site's strings array, made once at compile time and kept forever.
+	List {Value} template_objects;
 	// Functions whose inline caches still need clearing of dead shapes (see scan_ics).
 	List {FunctionProto*} ic_scan;
 	// Kinds of host objects, by id (see host.c3).
@@ -230,6 +233,7 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.roots.init(mem);
 	self.native_classes.init(mem);
 	self.ic_scan.init(mem);
+	self.template_objects.init(mem);
 	self.owned_names.init(mem);
 	self.regex_cache.init(mem);
 	self.jobs.init(mem);
@@ -287,6 +291,7 @@ fn void Vm.free(&self)
 	}
 	self.native_classes.free();
 	self.ic_scan.free();
+	self.template_objects.free();
 }
 
 fn Value? Vm.atom_value(&self, String name) => string_value(self.heap.atom(name)!);
@@ -295,6 +300,7 @@ fn void? Vm.init_atoms(&self)
 {
 	Atoms* a = &self.atoms;
 	a.length = self.atom_value("length")!;
+	a.raw = self.atom_value("raw")!;
 	a.prototype = self.atom_value("prototype")!;
 	a.constructor = self.atom_value("constructor")!;
 	a.name = self.atom_value("name")!;

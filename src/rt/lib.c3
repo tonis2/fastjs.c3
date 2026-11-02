@@ -1939,6 +1939,25 @@ fn void? Vm.json_revive_into(&self, Value holder, Value key, Value reviver)
 	self.define(holder.as_object(), key, revived)!;
 }
 
+<*
+ String.raw(strings, ...subs): strings.raw interleaved with the substitutions.
+*>
+fn Value? native_string_raw(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	Value strings = arg(args, 0);
+	if (strings.is_nullish()) return vm.throw_error(TYPE_ERROR, "Cannot convert undefined or null to object")~;
+	Value raw = vm.get(strings, vm.atoms.raw)!;
+	if (raw.is_nullish()) return vm.throw_error(TYPE_ERROR, "Cannot convert undefined or null to object")~;
+	uint n = vm.length_of(raw)!;
+	JsString* out = vm.atoms.empty.as_string();
+	for (uint i = 0; i < n; i++)
+	{
+		out = vm.heap.concat(out, vm.to_string(vm.index_get(raw, i)!)!) ?? vm.oom()~!;
+		if (i + 1 < n && (usz)i + 1 < args.len) out = vm.heap.concat(out, vm.to_string(args[i + 1])!) ?? vm.oom()~!;
+	}
+	return string_value(out);
+}
+
 // ---- Symbol, Reflect, Boolean, Date ----
 
 fn Value? native_symbol(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
@@ -2091,6 +2110,7 @@ fn void? Vm.init_lib(&self)
 	JsObject* sp = self.string_proto;
 	JsFunction* string_ctor = (JsFunction*)self.get(object_value(global), self.atom_value("String")!)!!.as_object();
 	self.define_native(string_ctor, "fromCharCode", &native_string_from_char_code, 1)!;
+	self.define_native(string_ctor, "raw", &native_string_raw, 1)!;
 	self.define_native(string_ctor, "fromCodePoint", &native_string_from_code_point, 1)!;
 	self.define_native(sp, "indexOf", &native_string_index_of, 1)!;
 	self.define_native(sp, "lastIndexOf", &native_string_last_index_of, 1)!;
