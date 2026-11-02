@@ -169,9 +169,18 @@ fn void Printer.statement_inline(&self, Node* n)
 			}
 			self.put(";\n");
 		case BREAK:
-			self.put("break;\n");
 		case CONTINUE:
-			self.put("continue;\n");
+			self.put(n.kind == BREAK ? "break" : "continue");
+			if (n.name.len)
+			{
+				self.put(" ");
+				self.put(n.name);
+			}
+			self.put(";\n");
+		case LABELED:
+			self.put(n.name);
+			self.put(": ");
+			self.statement_inline(n.a);
 		case THROW:
 			self.put("throw ");
 			self.expr(n.a);

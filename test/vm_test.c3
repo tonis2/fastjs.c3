@@ -102,3 +102,18 @@ fn void errors_have_stack_traces() @test
 		test::@check(out.contains("at outer (<test>:2)"), "got %s", out);
 	};
 }
+
+fn void label_errors() @test
+{
+	Vm vm;
+	vm.init()!!;
+	defer vm.free();
+	@pool()
+	{
+		test::eq(run(&vm, "x: for (;;) { break y; }"), "SyntaxError: Undefined label 'y'");
+		test::eq(run(&vm, "x: { continue x; }"), "SyntaxError: Illegal continue statement: 'x' does not denote an iteration statement");
+		test::eq(run(&vm, "x: x: ;"), "SyntaxError: Label 'x' has already been declared");
+		test::eq(run(&vm, "x: { x: ; }"), "SyntaxError: Label 'x' has already been declared");
+		test::eq(run(&vm, "x: { for (;;) break x; } console.log('ok');"), "ok");
+	};
+}

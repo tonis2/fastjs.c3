@@ -57,8 +57,9 @@ enum NodeKind : char (String text)
 	FOR_IN { "for in" },               // a: VAR_DECL or target, b: object, d: body
 	WHILE { "while" },                 // a: test, d: body
 	RETURN { "return" },               // a
-	BREAK { "break" },
-	CONTINUE { "continue" },
+	BREAK { "break" },                 // name: the label, if any
+	CONTINUE { "continue" },           // name: the label, if any
+	LABELED { "labeled statement" },   // name: the label, a: the statement
 	THROW { "throw" },                 // a
 	TRY { "try" },                     // a: block, b: catch binding, c: catch block, d: finally block
 	SWITCH { "switch" },               // a: discriminant, list: CASE

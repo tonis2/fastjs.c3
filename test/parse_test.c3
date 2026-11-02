@@ -174,8 +174,6 @@ fn void dropped_features() @test
 	check_error("var x = 1;", "'var' is not supported; use 'let' or 'const'");
 	check_error("do { } while (x);", "'do...while' is not supported; use 'while'");
 	check_error("with (o) {}", "'with' is not supported");
-	check_error("outer: for (;;) {}", "labels are not supported");
-	check_error("for (;;) { break outer; }", "labels are not supported");
 	check_error("return 1;", "'return' outside of a function");
 	check_error("let let = 1;", "'let' cannot be a variable name");
 	check_error("const class = 1;", "'class' is a reserved word");
@@ -186,4 +184,12 @@ fn void error_positions() @test
 	check("let a = (1;", "ERROR 1:11 expected ')' but found ';'");
 	check("f(\n  a,\n  b c)", "ERROR 3:5 expected ')' but found 'c'");
 	check("'unterminated", "ERROR 1:1 unterminated string");
+}
+
+fn void labels() @test
+{
+	check("outer: for (;;) { break outer; }", "outer: for (;;) {\n\tbreak outer;\n}");
+	check("a: b: while (x) continue a;", "a: b: while (x) {\n\tcontinue a;\n}");
+	check_error("a: let x = 1;", "Lexical declaration cannot appear in a single-statement context");
+	check_error("a: class C {}", "Lexical declaration cannot appear in a single-statement context");
 }

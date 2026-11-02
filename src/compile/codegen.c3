@@ -10,6 +10,8 @@ enum JumpKind : char
 	LOOP,
 	SWITCH,
 	FINALLY,
+	// A labelled statement other than a loop: only `break label` leaves it.
+	LABEL,
 }
 
 <*
@@ -41,6 +43,8 @@ struct JumpCtx
 	uint iter_reg;
 	// A for await: the close awaits what return() gives.
 	bool async_close;
+	// The outermost of the labels on this loop or statement (a LABELED chain), or null.
+	Node* labels;
 }
 
 struct FuncState
@@ -57,6 +61,8 @@ struct FuncState
 	uint max_reg;
 	uint line;
 	JumpCtx* jumps;
+	// Labels on the loop about to be compiled, which its push_jump(LOOP) takes.
+	Node* pending_labels;
 	// Jumps to the short-circuit of the innermost optional chain.
 	List {uint}* chain_nils;
 	// In a class constructor: `this` starts uninitialized (derived) and fields run at the start or after super().
@@ -1868,6 +1874,11 @@ fn JumpCtx* Codegen.push_jump(&self, JumpKind kind)
 	c.entries.init(self.arena);
 	c.exits.init(self.arena);
 	c.next_code = 3;
+	if (kind == LOOP)
+	{
+		c.labels = self.fs.pending_labels;
+		self.fs.pending_labels = null;
+	}
 	self.fs.jumps = c;
 	return c;
 }
@@ -1879,6 +1890,8 @@ fn void? Codegen.jump_out(&self, JumpCtx* from, JumpCtx* target, bool is_break)
 {
 	for (JumpCtx* c = from; c != target; c = c.outer)
 	{
+		// A labelled jump can leave inner loops: their iterators are closed on the way out.
+		if (c.closes_iterator) self.close_iterator(c)!;
 		if (c.kind != FINALLY) continue;
 		uint code = c.next_code++;
 		c.exits.push({ .code = code, .is_break = is_break, .target = target });
@@ -1934,9 +1947,32 @@ fn void? Codegen.close_iterator(&self, JumpCtx* c)
 	self.release(saved);
 }
 
+fn bool JumpCtx.has_label(&self, String name)
+{
+	for (Node* l = self.labels; l && l.kind == LABELED; l = l.a)
+	{
+		if (l.name == name) return true;
+	}
+	return false;
+}
+
 fn void? Codegen.stmt_break(&self, Node* n)
 {
 	bool is_break = n.kind == BREAK;
+	if (n.name.len)
+	{
+		for (JumpCtx* c = self.fs.jumps; c; c = c.outer)
+		{
+			if (!c.has_label(n.name)) continue;
+			if (!is_break && c.kind != LOOP)
+			{
+				return self.fail(n, string::bformat(&self.error_buf, "Illegal continue statement: '%s' does not denote an iteration statement", n.name))~;
+			}
+			self.jump_out(self.fs.jumps, c, is_break)!;
+			return;
+		}
+		return self.fail(n, string::bformat(&self.error_buf, "Undefined label '%s'", n.name))~;
+	}
 	for (JumpCtx* c = self.fs.jumps; c; c = c.outer)
 	{
 		if (c.kind == LOOP || (is_break && c.kind == SWITCH))
@@ -1946,6 +1982,42 @@ fn void? Codegen.stmt_break(&self, Node* n)
 		}
 	}
 	return self.fail(n, is_break ? "'break' outside of a loop or switch" : "'continue' outside of a loop")~;
+}
+
+<*
+ `a: b: statement`. A loop takes its labels into its own LOOP context, so `continue a` works;
+ any other statement gets a LABEL context that `break a` leaves.
+*>
+fn void? Codegen.stmt_labeled(&self, Node* n)
+{
+	Node* body = n;
+	while (body.kind == LABELED)
+	{
+		for (JumpCtx* c = self.fs.jumps; c; c = c.outer)
+		{
+			if (c.has_label(body.name)) return self.fail(body, string::bformat(&self.error_buf, "Label '%s' has already been declared", body.name))~;
+		}
+		for (Node* l = n; l != body; l = l.a)
+		{
+			if (l.name == body.name) return self.fail(body, string::bformat(&self.error_buf, "Label '%s' has already been declared", body.name))~;
+		}
+		body = body.a;
+	}
+	switch (body.kind)
+	{
+		case WHILE:
+		case FOR:
+		case FOR_OF:
+		case FOR_IN:
+			self.fs.pending_labels = n;
+			self.stmt(body)!;
+		default:
+			JumpCtx* c = self.push_jump(LABEL);
+			c.labels = n;
+			self.stmt(body)!;
+			self.fs.jumps = c.outer;
+			self.patch_all(&c.breaks, self.pc())!;
+	}
 }
 
 fn void? Codegen.block(&self, Node* n)
@@ -2059,6 +2131,8 @@ fn void? Codegen.stmt(&self, Node* n)
 		case BREAK:
 		case CONTINUE:
 			self.stmt_break(n)!;
+		case LABELED:
+			self.stmt_labeled(n)!;
 		case THROW:
 			uint v = self.expr_any(n.a)!;
 			self.fs.line = n.line;

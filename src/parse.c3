@@ -257,9 +257,14 @@ fn Node*? Parser.parse_statement(&self, bool top_level = false)
 		case KW_BREAK:
 		case KW_CONTINUE:
 			self.advance()!;
-			if (self.tok.kind == IDENT && !self.tok.nl_before) return self.fail("labels are not supported")~;
+			Node* n = self.node(t.kind == KW_BREAK ? BREAK : CONTINUE, &t);
+			if (self.tok.kind == IDENT && !self.tok.nl_before)
+			{
+				n.name = self.tok.text(self.src);
+				self.advance()!;
+			}
 			self.consume_semicolon()!;
-			return self.node(t.kind == KW_BREAK ? BREAK : CONTINUE, &t);
+			return n;
 		case KW_THROW:
 			self.advance()!;
 			if (self.tok.nl_before) return self.fail("no line break is allowed after 'throw'")~;
@@ -288,7 +293,7 @@ fn Node*? Parser.parse_statement(&self, bool top_level = false)
 		case IDENT:
 			if (self.at_word("let")) return self.parse_declaration_statement();
 			Token next = self.peek()!;
-			if (next.kind == COLON) return self.fail("labels are not supported")~;
+			if (next.kind == COLON) return self.parse_labeled();
 			if (self.at_word("async") && next.kind == KW_FUNCTION && !next.nl_before)
 			{
 				self.advance()!;
@@ -301,6 +306,30 @@ fn Node*? Parser.parse_statement(&self, bool top_level = false)
 	n.a = self.parse_expression()!;
 	self.consume_semicolon()!;
 	return n;
+}
+
+<*
+ `name: statement`. Which break or continue a label serves is checked by the code generator.
+*>
+fn Node*? Parser.parse_labeled(&self)
+{
+	Token t = self.tok;
+	Node* n = self.node(LABELED, &t);
+	n.name = t.text(self.src);
+	self.advance()!;
+	self.advance()!;
+	Token body = self.tok;
+	n.a = self.parse_statement()!;
+	switch (n.a.kind)
+	{
+		case VAR_DECL:
+		case CLASS:
+			return self.fail_at(&body, "Lexical declaration cannot appear in a single-statement context")~;
+		case FUNCTION:
+			return self.fail_at(&body, "In strict mode code, functions can only be declared at top level or inside a block.")~;
+		default:
+			return n;
+	}
 }
 
 fn Node*? Parser.parse_block(&self)

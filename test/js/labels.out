@@ -1,0 +1,41 @@
+for 0 0
+for 1 0
+while 2
+in block
+two labels 1
+cell 1 1
+cols closed
+cell 2 1
+cols closed
+cell 3 1
+cols closed
+d2 closed
+c2 closed
+r2 closed
+gen 1 1
+inner-gen finally
+outer-gen finally
+inner finally 0 1
+inner finally 0 2
+in-try closed
+outer finally 0
+inner finally 1 1
+inner finally 1 2
+in-try closed
+outer finally 1
+if
+try
+finally after break t
+after x
+[ 1, 0 ]
+arrow
+async 1 1
+B return
+B settled
+async 2 1
+B return
+B settled
+async 3 1
+B return
+B settled
+async done

@@ -1079,6 +1079,17 @@ Each step is verified before the next:
     - `return v` and `return(v)` at a yield await v; `return(v)` on a finished or unstarted
       generator awaits v before settling (`async_gen_await_return`).
     - Tests: `asyncgen.js`, `asyncgen2.js`, `asyncgen3.js`.
+  - **Labels** (dropped in the original scope, added later):
+    - The parser makes LABELED nodes and keeps a label name on BREAK/CONTINUE. Labelled lexical
+      declarations and functions are rejected as V8 does.
+    - A loop's labels go into its own LOOP context (`FuncState.pending_labels`, taken by
+      `push_jump(LOOP)`), so `continue label` works. Any other statement gets a LABEL context
+      that only `break label` leaves.
+    - `jump_out` closes the iterator of every for-of and for await it leaves on the way to the
+      target, which only a labelled jump can do.
+    - Undefined, duplicate and non-loop `continue` labels are compile-time SyntaxErrors with
+      V8's messages (`vm_test.label_errors`).
+    - Test: `labels.js`.
   - **Date** (`src/rt/date.c3`): constructors, UTC and local fields, setters, the V8 string
     formats, en-US locale strings, ISO and loose parsing, via libc `localtime_r`.
     - Matches node in five zones. Zone names go through an abbreviation table for the common
@@ -1094,7 +1105,6 @@ Each step is verified before the next:
       and `\uD83D\uDE00` escapes) and accept `\p{…}`/`\P{…}`.
     - Test: `unicode.js`.
 - [ ] Known gaps left:
-  - labelled statements (`outer: for …`, `break outer`) are a compile error
   - a computed field key is converted to a property key at each instance, not once
   - a misplaced `super` is a runtime SyntaxError, not a compile-time one
   - `/i` without `u` uses simple lower-casing rather than the spec's Canonicalize
@@ -1326,6 +1336,8 @@ See **Phases** above. Break each one down when it starts.
 - 2026-11-02: `yield*` in async generators, and `for await` awaiting `return()` when it
   leaves early. Async generators also await returned values now. `test/js`: 36 files pass
   (-O0, -O3, `--gc-stress`); `c3c test`: 57.
+- 2026-11-02: Labelled statements. `test/js`: 37 files pass (-O0, -O3, `--gc-stress`);
+  `c3c test`: 59.
 
 **How to run things:**
 ```sh
