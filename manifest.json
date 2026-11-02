@@ -1,4 +1,11 @@
 {
   "provides": "fastjs",
-  "sources": ["src/**"]
+  "sources": ["src/**"],
+  "targets": {
+    "macos-x64": {},
+    "macos-aarch64": {},
+    "linux-x64": {},
+    "linux-aarch64": {},
+    "windows-x64": {}
+  }
 }
