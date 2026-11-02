@@ -972,6 +972,28 @@ Each step is verified before the next:
 - [x] **`CONCATN a b n`:** template literals join their pieces in one allocation, in chunks of
       32 (`Heap.concat_many`). `test/js/strings2.js` covers the sharing cases.
 - [x] Strings bench: 0.62× → 1.66× QuickJS, with the allocator.
+- [x] **Generators run inside the run loop for for-of.**
+  - FORNEXT on a generator stepped by the built-in next (`Vm.inline_generator`) pushes the
+    generator's frame with `inline_iter` set (`enter_generator`), instead of `iter_next`
+    calling `resume()` and a nested `execute()`.
+  - A YIELD from such a frame writes `stack[iter_dest]` and continues the caller. A RET sends
+    the caller to `iter_exit`.
+  - Exceptions unwind through it as through any frame, and `unwind` finishes the coroutine.
+  - Spread, destructuring and `yield*` still use the native path.
+  - `copy_values` replaces `memcpy` for the small register windows.
+  - Generators bench 1.5× → 1.65× QuickJS; a bare `for (const v of range(n))` loop is 1.5×.
+    The rest of the cost is copying the window in and out at each step. Reaching 2.5× would
+    need generator frames on their own stack segments; not done.
+- [ ] **Storing the pc only where needed: dropped.**
+  - Measured upper bound, keeping the store only at calls: 3–5% on `loop`/`methods`, within
+    noise on the rest.
+  - Not worth the risk to stack traces, handlers and `not_iterable`, which all read `f.pc`.
+- [x] (M16 item 1, done here) **A for-of body that throws closes its iterator.**
+  - A handler covers from after FORNEXT to the end of the body. It runs `ITERCLOSE base,0,1`,
+    which closes quietly so the body's exception wins, then THROWs.
+  - `iter_close` marks the state closed before calling `return()`, so the handler can't close
+    a second time after a `return` statement's close threw.
+  - Tests: `test/js/iterclose.js` and `generators2.js`.
 
 1. **String append buffers** (instead of ropes; data stays contiguous, so nothing needs flattening)
    - `JsString.data` becomes a pointer, either inline after the header or into a shared `StrBuf`

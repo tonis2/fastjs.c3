@@ -60,6 +60,11 @@ struct Frame
 	bool stop;
 	// A generator or async call: where the frame is saved when it suspends.
 	JsCoroutine* coroutine;
+	// A generator a for-of resumed inside the interpreter loop (see FORNEXT): a yield writes
+	// stack[iter_dest] and continues the loop body; a return sends the loop to iter_exit.
+	bool inline_iter;
+	uint iter_dest;
+	uint iter_exit;
 }
 
 enum ErrorKind : char

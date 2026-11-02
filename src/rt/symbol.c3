@@ -271,10 +271,14 @@ fn bool? Vm.iter_next(&self, Value* state, Value* out)
 *>
 fn void? Vm.iter_close(&self, Value* state)
 {
-	if (state[1].is_int() || !state[0].is_object()) return;
-	if (state[0].as_object().kind == ITERATOR) return;
-	Value ret = self.get(state[0], self.atoms.return_str)!;
-	if (ret.is_function()) (void)self.call(ret, state[0], {})!;
+	Value it = state[0];
+	// Closed from here on, even if return() throws: a second close of the same loop, by the
+	// handler around a for-of body, must do nothing.
+	state[0] = UNDEFINED;
+	if (state[1].is_int() || !it.is_object()) return;
+	if (it.as_object().kind == ITERATOR) return;
+	Value ret = self.get(it, self.atoms.return_str)!;
+	if (ret.is_function()) (void)self.call(ret, it, {})!;
 }
 
 <*

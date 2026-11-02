@@ -82,6 +82,53 @@ fn Unwind Vm.unwind(&self, Value* result)
 	return PROPAGATE;
 }
 
+<*
+ The generator of a for-of's iterator state, when the loop can run it inline: a generator
+ object stepped by the built-in next, not running already. A finished one is returned too, so
+ the loop just ends.
+*>
+fn JsCoroutine* Vm.inline_generator(&self, Value* state) @inline
+{
+	if (!state[0].is_object() || state[0].as_object().kind != COROUTINE || !state[1].is_function()) return null;
+	JsFunction* next = (JsFunction*)state[1].as_object();
+	if (next.native != &native_generator_resume || next.magic != 0) return null;
+	JsCoroutine* c = (JsCoroutine*)state[0].as_object();
+	if (c.is_async || c.state == RUNNING) return null;
+	return c;
+}
+
+<*
+ Push generator c's frame to run inside the interpreter loop, as resume() would for next():
+ what it yields goes to stack[dest] and the caller carries on at its own pc; when it returns,
+ the caller goes to exit.
+
+ @return? THROWN
+*>
+fn Frame*? Vm.enter_generator(&self, JsCoroutine* c, uint dest, uint exit)
+{
+	FunctionProto* p = c.function.proto;
+	if (c.state == SUSPENDED)
+	{
+		// The value next() sends, and NEXT for the suspending YIELD's mode register.
+		uint ins = p.code[c.pc - 1];
+		c.regs[ins_a(ins)] = UNDEFINED;
+		if (ins_op(ins) == YIELD) c.regs[ins_b(ins)] = integer((int)ResumeMode.NEXT.ordinal);
+		self.heap.touch(c);
+	}
+	uint base = self.stack_top + 1;
+	if (self.frame_count == MAX_FRAMES || base + p.nregs + 2 >= STACK_SIZE)
+	{
+		return self.throw_error(RANGE_ERROR, "Maximum call stack size exceeded")~;
+	}
+	self.stack[base - 1] = UNDEFINED;
+	copy_values(self.stack + base, c.regs, c.nregs);
+	Frame* g = &self.frames[self.frame_count++];
+	*g = { .proto = p, .function = c.function, .pc = c.pc, .base = base, .new_target = UNDEFINED, .coroutine = c, .inline_iter = true, .iter_dest = dest, .iter_exit = exit };
+	self.stack_top = base + p.nregs;
+	c.state = RUNNING;
+	return g;
+}
+
 fn Value int_or_double(long v) @inline
 {
 	if (v >= int::min && v <= int::max) return integer((int)v);
@@ -1011,6 +1058,8 @@ fn Value? Vm.run(&self)
 				}
 				bool stop = f.stop;
 				uint base = f.base;
+				bool inline_iter = f.inline_iter;
+				uint exit = f.iter_exit;
 				self.frame_count--;
 				self.stack[base - 1] = v;
 				if (stop) return v;
@@ -1018,7 +1067,8 @@ fn Value? Vm.run(&self)
 				code = f.proto.code.ptr;
 				k = f.proto.consts.ptr;
 				r = self.stack + f.base;
-				pc = f.pc;
+				// A generator a for-of was running is done: the loop is too.
+				pc = inline_iter ? exit : f.pc;
 				self.stack_top = f.base + f.proto.nregs;
 			case THROW:
 				return self.throw_value(r[a])~;
@@ -1117,6 +1167,22 @@ fn Value? Vm.run(&self)
 					r[a + 1] = integer((int)i + 1);
 					break;
 				}
+				// A plain generator runs right here rather than in a nested execute(): its frame
+				// goes on top of this one, and its next yield comes back to the loop body.
+				if (JsCoroutine* c = self.inline_generator(r + a))
+				{
+					if (c.state == DONE)
+					{
+						pc = (uint)((int)pc + ins_sbx(ins));
+						break;
+					}
+					f = self.enter_generator(c, f.base + a + 2, (uint)((int)pc + ins_sbx(ins)))!;
+					code = f.proto.code.ptr;
+					k = f.proto.consts.ptr;
+					r = self.stack + f.base;
+					pc = f.pc;
+					break;
+				}
 				Value item;
 				if (!self.iter_next(r + a, &item)!)
 				{
@@ -1125,6 +1191,14 @@ fn Value? Vm.run(&self)
 				}
 				r[a + 2] = item;
 			case ITERCLOSE:
+				// c set: closing because the loop body threw. That exception wins over anything
+				// return() throws, so this one is dropped.
+				if (ins_c(ins))
+				{
+					Value pending = self.exception;
+					if (catch self.iter_close(r + a)) self.exception = pending;
+					break;
+				}
 				self.iter_close(r + a)!;
 			case ITERSTEP:
 				// An exhausted iteration has r[a] cleared, so ITERCLOSE knows not to close it.
@@ -1164,14 +1238,22 @@ fn Value? Vm.run(&self)
 				c.state = RUNNING;
 				f.coroutine = c;
 			case YIELD:
-				// Generator frames only ever run from resume(), as stop frames.
-				assert(f.stop, "generator frame is not a stop frame");
+				// A generator runs from resume() as a stop frame, or inline from a for-of.
 				JsCoroutine* c = f.coroutine;
 				self.save_frame(c, f, pc);
 				c.state = SUSPENDED;
 				Value v = r[a];
 				self.frame_count--;
-				return v;
+				if (f.stop) return v;
+				assert(f.inline_iter, "generator frame neither stop nor inline");
+				uint dest = f.iter_dest;
+				f = &self.frames[self.frame_count - 1];
+				code = f.proto.code.ptr;
+				k = f.proto.consts.ptr;
+				r = self.stack + f.base;
+				pc = f.pc;
+				self.stack_top = f.base + f.proto.nregs;
+				self.stack[dest] = v;
 			case AWAIT:
 				JsCoroutine* c = f.coroutine;
 				self.await_value(c, r[a])!;

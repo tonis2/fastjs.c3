@@ -1979,6 +1979,7 @@ fn void? Codegen.stmt_for_of(&self, Node* n)
 	loop.closes_iterator = n.kind == FOR_OF;
 	loop.iter_reg = base;
 	self.stmt(n.d)!;
+	uint body_end = self.pc();
 	self.fs.jumps = loop.outer;
 	self.patch_all(&loop.continues, top)!;
 	self.jump_back(JMP, 0, top)!;
@@ -1988,10 +1989,21 @@ fn void? Codegen.stmt_for_of(&self, Node* n)
 		self.patch_all(&loop.breaks, self.pc())!;
 		self.emit_abc(ITERCLOSE, base);
 		self.patch(exit)!;
-		return;
 	}
-	self.patch(exit)!;
-	self.patch_all(&loop.breaks, self.pc())!;
+	else
+	{
+		self.patch(exit)!;
+		self.patch_all(&loop.breaks, self.pc())!;
+	}
+	if (n.kind != FOR_OF) return;
+	// So does a throw from the binding or the body, though not one from next() itself, which
+	// is the FORNEXT just before the range. The value register is dead then and takes the
+	// exception.
+	uint over = self.emit_jump(JMP)!;
+	self.fs.handlers.push({ .start = top + 1, .end = body_end, .handler = self.pc(), .reg = base + 2 });
+	self.emit_abc(ITERCLOSE, base, 0, 1);
+	self.emit_abc(THROW, base + 2);
+	self.patch(over)!;
 }
 
 fn void? Codegen.try_catch(&self, Node* n)

@@ -58,11 +58,20 @@ fn JsCoroutine*? Vm.new_coroutine(&self, Frame* f, bool is_async)
 }
 
 <*
+ A generator's window is a handful of registers, copied at every step: a plain loop beats a
+ call into libc's memcpy here.
+*>
+fn void copy_values(Value* dest, Value* src, uint n) @inline
+{
+	for (uint i = 0; i < n; i++) dest[i] = src[i];
+}
+
+<*
  Copy a frame's registers into its coroutine, to continue at pc later.
 *>
 fn void Vm.save_frame(&self, JsCoroutine* c, Frame* f, uint pc) @inline
 {
-	mem::copy(c.regs, self.stack + f.base, (usz)c.nregs * Value::size);
+	copy_values(c.regs, self.stack + f.base, c.nregs);
 	c.pc = pc;
 	self.heap.touch(c);
 }
@@ -117,7 +126,7 @@ fn Value? Vm.resume(&self, JsCoroutine* c, Value v, ResumeMode mode)
 		return self.throw_error(RANGE_ERROR, "Maximum call stack size exceeded")~;
 	}
 	self.stack[base - 1] = UNDEFINED;
-	mem::copy(self.stack + base, c.regs, (usz)c.nregs * Value::size);
+	copy_values(self.stack + base, c.regs, c.nregs);
 	Frame* f = &self.frames[self.frame_count++];
 	*f = { .proto = p, .function = c.function, .pc = c.pc, .base = base, .new_target = UNDEFINED, .stop = true, .coroutine = c };
 	self.stack_top = base + p.nregs;

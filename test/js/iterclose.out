@@ -1,0 +1,16 @@
+a return called
+body a
+b return called
+body b
+c next
+d return called
+TypeError
+e return called
+e return
+f return called
+ran out quietly
+inner 3
+inner return called
+outer return called
+deep
+array
