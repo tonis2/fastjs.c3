@@ -104,6 +104,9 @@ enum Op : char
 	SETTHIS,        // A    this = r[a]; ReferenceError if super() already ran
 	CHECKTHIS,      // A    ReferenceError if r[a] is `this` before super()
 	GETSUPER,       // ABx  r[a] = super[K[bx]], with `this` as the receiver
+	GETSUPERELEM,   // AB   r[a] = super[r[b]], with `this` as the receiver
+	SETSUPERELEM,   // AB   super[r[a]] = r[b], with `this` as the receiver
+	INITPROTO,      // AB   `__proto__: r[b]` in an object literal: r[a]'s prototype, when r[b] is an object or null
 
 	GETITER,        // ABC  iterate r[b]: r[a] = iterator state, r[a+1] = step state; c = 1 always makes a real iterator
 	FORNEXT,        // AsBx r[a+2] = next value, or jump when done

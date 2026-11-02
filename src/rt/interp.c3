@@ -83,6 +83,47 @@ fn Unwind Vm.unwind(&self, Value* result)
 }
 
 <*
+ The object whose prototype a `super` reference in frame f starts from.
+
+ @return? THROWN
+*>
+fn JsObject*? Vm.super_home(&self, Frame* f, Value* r) @inline
+{
+	JsObject* home = f.function.home_object;
+	if (!home) return self.throw_error(SYNTAX_ERROR, "'super' keyword unexpected here")~;
+	if (r[0] == UNINITIALIZED) return self.no_super_error()~;
+	return home;
+}
+
+<*
+ `super[key] = v`: look key up from start, but with `this` as the receiver: a setter found
+ is called on it, and otherwise the property is written on it, not on the prototype.
+
+ @return? THROWN
+*>
+fn void? Vm.set_super(&self, JsObject* start, Value key, Value v, Value receiver)
+{
+	for (JsObject* o = start; o; o = o.proto())
+	{
+		Shape* s = o.find_own(key);
+		if (!s) continue;
+		if (s.flags.accessor) return self.call_setter(o.slots[s.slot()], receiver, key, v);
+		if (!s.flags.writable) return self.throw_error(TYPE_ERROR, "Cannot assign to read only property '%s' of object", self.key_text(key))~;
+		break;
+	}
+	if (!receiver.is_object()) return self.throw_error(TYPE_ERROR, "Cannot assign to property '%s' of %s", self.key_text(key), self.describe(receiver))~;
+	JsObject* target = receiver.as_object();
+	Shape* own = target.find_own(key);
+	if (own && !own.flags.accessor && own.flags.writable)
+	{
+		target.slots[own.slot()] = v;
+		self.heap.touch(target);
+		return;
+	}
+	self.define(target, key, v)!;
+}
+
+<*
  The generator of a for-of's iterator state, when the loop can run it inline: a generator
  object stepped by the built-in next, not running already. A finished one is returned too, so
  the loop just ends.
@@ -1148,6 +1189,22 @@ fn Value? Vm.run(&self)
 				if (!home) return self.throw_error(SYNTAX_ERROR, "'super' keyword unexpected here")~;
 				if (r[0] == UNINITIALIZED) return self.no_super_error()~;
 				r[a] = self.get_from(home.proto(), k[ins_bx(ins)], r[0])!;
+			case INITPROTO:
+				Value proto = r[ins_b(ins)];
+				if (proto.is_object())
+				{
+					r[a].as_object().set_proto(&self.heap, proto.as_object()) ?? self.oom()~!;
+				}
+				else if (proto.is_null())
+				{
+					r[a].as_object().set_proto(&self.heap, null) ?? self.oom()~!;
+				}
+			case GETSUPERELEM:
+				JsObject* home = self.super_home(f, r)!;
+				r[a] = self.get_from(home.proto(), self.to_key(r[ins_b(ins)])!, r[0])!;
+			case SETSUPERELEM:
+				JsObject* home = self.super_home(f, r)!;
+				self.set_super(home.proto(), self.to_key(r[a])!, r[ins_b(ins)], r[0])!;
 
 			case GETITER:
 				self.get_iterator(r[ins_b(ins)], r + a)!;

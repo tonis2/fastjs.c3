@@ -1118,7 +1118,11 @@ fn void? Codegen.expr(&self, Node* e, uint dest)
 		case MEMBER:
 			if (e.a.kind == SUPER)
 			{
-				if (e.flags.computed) return self.unsupported(e, "computed 'super[...]' accesses")~;
+				if (e.flags.computed)
+				{
+					self.emit_abc(GETSUPERELEM, dest, self.expr_any(e.b)!);
+					break;
+				}
 				self.emit_abx(GETSUPER, dest, self.atom_const(e.name)!);
 				break;
 			}
@@ -1257,6 +1261,8 @@ fn void? Codegen.object_literal(&self, Node* e, uint dest)
 			}
 			uint fun = self.alloc()!;
 			self.closure(p.b, fun, p.flags.computed ? "" : p.a.name)!;
+			// `super` inside it starts at the literal's prototype.
+			self.emit_abc(SETHOME, fun, dest);
 			self.emit_abc(p.flags.getter ? INITGETTER : INITSETTER, dest, key, fun);
 			self.release(mark);
 			continue;
@@ -1266,13 +1272,23 @@ fn void? Codegen.object_literal(&self, Node* e, uint dest)
 			uint key = self.expr_any(p.a)!;
 			uint v = self.alloc()!;
 			self.expr(p.b, v)!;
+			if (p.flags.method) self.emit_abc(SETHOME, v, dest);
 			self.emit_abc(INITELEM, dest, key, v);
+			self.release(mark);
+			continue;
+		}
+		// `__proto__: value` (not shorthand, not a method) sets the prototype instead.
+		if (!p.flags.shorthand && !p.flags.method && p.a.kind != NUMBER && p.a.name == "__proto__")
+		{
+			uint pv = self.expr_any(p.b)!;
+			self.emit_abc(INITPROTO, dest, pv);
 			self.release(mark);
 			continue;
 		}
 		Value key = self.key_const(p.a)!;
 		uint v = self.alloc()!;
 		self.expr_named(p.b, v, key.is_string() ? key.as_string().tutf8() : "")!;
+		if (p.flags.method) self.emit_abc(SETHOME, v, dest);
 		uint k = self.const_index(key)!;
 		if (k <= 255)
 		{
@@ -1412,6 +1428,7 @@ fn void? Codegen.update(&self, Node* e, uint dest)
 fn void? Codegen.assign(&self, Node* e, uint dest)
 {
 	Node* t = e.a;
+	if (t.kind == MEMBER && t.a.kind == SUPER) return self.assign_super(e, dest);
 	bool logical = e.op == AMP_AMP_ASSIGN || e.op == PIPE_PIPE_ASSIGN || e.op == QUESTION_QUESTION_ASSIGN;
 	if (t.kind == IDENT && self.is_plain_local(t.sema) && ((Binding*)t.sema).kind != CONST && !logical)
 	{
@@ -1511,6 +1528,49 @@ fn void? Codegen.assign(&self, Node* e, uint dest)
 	if (dest != DISCARD && dest != cur) self.emit_abc(MOVE, dest, cur);
 }
 
+<*
+ `super.x = v`, `super[k] op= v`: through SETSUPERELEM, the key in a register.
+*>
+fn void? Codegen.assign_super(&self, Node* e, uint dest)
+{
+	Node* t = e.a;
+	bool logical = e.op == AMP_AMP_ASSIGN || e.op == PIPE_PIPE_ASSIGN || e.op == QUESTION_QUESTION_ASSIGN;
+	uint key = self.alloc()!;
+	if (t.flags.computed)
+	{
+		self.expr(t.b, key)!;
+	}
+	else
+	{
+		self.load_value(key, self.atom(t.name)!)!;
+	}
+	uint cur = self.alloc()!;
+	uint skip;
+	if (e.op == ASSIGN)
+	{
+		self.expr(e.b, cur)!;
+	}
+	else
+	{
+		self.emit_abc(GETSUPERELEM, cur, key);
+		if (logical)
+		{
+			Op jump = e.op == AMP_AMP_ASSIGN ? JMPF : e.op == PIPE_PIPE_ASSIGN ? JMPT : JMPNOTNULLISH;
+			skip = self.emit_jump(jump, cur)!;
+			self.expr(e.b, cur)!;
+		}
+		else
+		{
+			self.fs.line = e.line;
+			self.binary_to(e.op, cur, cur, e.b)!;
+		}
+	}
+	self.fs.line = e.line;
+	self.emit_abc(SETSUPERELEM, key, cur);
+	if (logical) self.patch(skip)!;
+	if (dest != DISCARD && dest != cur) self.emit_abc(MOVE, dest, cur);
+}
+
 fn bool has_spread(Node*[] args)
 {
 	foreach (a : args)
@@ -1564,9 +1624,16 @@ fn void? Codegen.call(&self, Node* e, uint dest)
 	uint base = self.alloc(2)!;
 	if (callee.kind == MEMBER && callee.a.kind == SUPER)
 	{
-		if (callee.flags.computed) return self.unsupported(callee, "computed 'super[...]' calls")~;
 		self.emit_abc(MOVE, base + 1, 0);
-		self.emit_abx(GETSUPER, base, self.atom_const(callee.name)!);
+		if (callee.flags.computed)
+		{
+			self.emit_abc(GETSUPERELEM, base, self.expr_any(callee.b)!);
+			self.release(base + 2);
+		}
+		else
+		{
+			self.emit_abx(GETSUPER, base, self.atom_const(callee.name)!);
+		}
 	}
 	else if (callee.kind == MEMBER)
 	{
@@ -2169,6 +2236,23 @@ fn void? Codegen.field_initializers(&self, Node* cls, bool is_static)
 		if (!m.flags.field || m.flags.is_static != is_static) continue;
 		uint mark = self.fs.free_reg;
 		self.fs.line = m.line;
+		if (m.flags.computed)
+		{
+			uint kr = self.alloc()!;
+			self.expr(m.d, kr)!;
+			uint cv = self.alloc()!;
+			if (m.b)
+			{
+				self.expr(m.b, cv)!;
+			}
+			else
+			{
+				self.emit_abc(LOADUNDEF, cv);
+			}
+			self.emit_abc(INITELEM, 0, kr, cv);
+			self.release(mark);
+			continue;
+		}
 		Value key = self.key_const(m.a)!;
 		uint v = self.alloc()!;
 		if (m.b)
@@ -2220,10 +2304,24 @@ fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
 	self.fs.protos.push(p!);
 	self.emit_abx(CLOSURE, base, (uint)self.fs.protos.len() - 1);
 	self.emit_abc(DEFCLASS, base, base + 2, has_extends ? 1 : 0);
-	// The class's own name inside its body.
-	foreach (b : scope.bindings) self.store_binding_value(b, base)!;
+	// The class's own name inside its body (the scope's other bindings are hidden field keys).
+	foreach (b : scope.bindings)
+	{
+		if (b.name.len && b.name[0] != '#') self.store_binding_value(b, base)!;
+	}
 	foreach (m : n.list)
 	{
+		if (m.flags.field && m.flags.computed)
+		{
+			// Evaluated now, in member order, and once for every instance.
+			uint mark = self.fs.free_reg;
+			self.fs.line = m.line;
+			uint key = self.alloc()!;
+			self.expr(m.a, key)!;
+			self.store_binding_value((Binding*)m.d.sema, key)!;
+			self.release(mark);
+			continue;
+		}
 		if (!m.flags.method || is_constructor_member(m)) continue;
 		uint mark = self.fs.free_reg;
 		self.fs.line = m.line;

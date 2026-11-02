@@ -634,7 +634,8 @@ fn Node*? Resolver.field_function(&self, Node* cls, bool is_static)
 	foreach (m : cls.list)
 	{
 		if (!m.flags.field || m.flags.is_static != is_static) continue;
-		if (m.flags.computed) return self.fail(m, "computed class field names are not supported yet")~;
+		// A computed name was evaluated once, with the class; the initializer reads it back.
+		if (m.flags.computed) self.visit(m.d)!;
 		self.visit(m.b)!;
 	}
 	return f;
@@ -660,9 +661,20 @@ fn void? Resolver.visit_class(&self, Node* n)
 	if (!ctor) ctor = self.default_constructor(n);
 	ctor.flags.class_constructor = true;
 	ctor.flags.derived = n.a != null;
-	foreach (m : n.list)
+	foreach (i, m : n.list)
 	{
-		if (m.flags.computed) self.visit(m.a)!;
+		if (!m.flags.computed) continue;
+		self.visit(m.a)!;
+		if (!m.flags.field) continue;
+		// The key of a computed field is kept in a hidden constant of the class scope ('#' can't
+		// start a name in source), set when the class is defined.
+		String hidden = string::format(self.arena, "#field%d", i);
+		Binding* b = self.declare(hidden, CONST, m)!;
+		b.declared = true;
+		Node* id = alloc::new(self.arena, Node);
+		*id = { .kind = IDENT, .name = hidden, .line = m.line, .col = m.col, .start = m.start };
+		m.d = id;
+		self.visit(id)!;
 	}
 	foreach (m : n.list)
 	{

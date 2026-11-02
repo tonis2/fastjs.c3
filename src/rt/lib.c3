@@ -1890,8 +1890,53 @@ fn Value? native_json_parse(Vm* vm, Value this_value, Value[] args, JsFunction* 
 		Value v = vm.json_read(&r, 0)!;
 		r.skip_space();
 		if (r.pos != r.text.len) return vm.json_error(&r)~;
-		return v;
+		Value reviver = arg(args, 1);
+		if (!reviver.is_function()) return v;
+		// The spec's InternalizeJSONProperty: the reviver sees every value bottom-up, with its
+		// holder as `this`, starting from a wrapper object { "": v }.
+		JsObject* root = vm.heap.new_object(vm.object_proto) ?? vm.oom()~!;
+		vm.define(root, vm.atoms.empty, v)!;
+		return vm.json_revive(object_value(root), vm.atoms.empty, reviver);
 	};
+}
+
+<*
+ @return? THROWN
+*>
+fn Value? Vm.json_revive(&self, Value holder, Value key, Value reviver)
+{
+	Value val = self.get(holder, key)!;
+	if (val.is_object() && !val.is_function())
+	{
+		JsObject* o = val.as_object();
+		if (o.kind == ARRAY)
+		{
+			uint n = self.length_of(val)!;
+			for (uint i = 0; i < n; i++) self.json_revive_into(val, integer((int)i), reviver)!;
+		}
+		else
+		{
+			List {Value} keys;
+			keys.init(mem);
+			defer keys.free();
+			self.own_keys(o, &keys)!;
+			foreach (k : keys) self.json_revive_into(val, k, reviver)!;
+		}
+	}
+	Value name = key.is_int() ? string_value(self.to_string(key)!) : key;
+	Value[2] call_args = { name, val };
+	return self.call(reviver, holder, &call_args);
+}
+
+fn void? Vm.json_revive_into(&self, Value holder, Value key, Value reviver)
+{
+	Value revived = self.json_revive(holder, key, reviver)!;
+	if (revived.is_undefined())
+	{
+		(void)self.delete_property(holder, key)!;
+		return;
+	}
+	self.define(holder.as_object(), key, revived)!;
 }
 
 // ---- Symbol, Reflect, Boolean, Date ----
