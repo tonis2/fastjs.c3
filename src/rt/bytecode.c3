@@ -47,6 +47,7 @@ enum Op : char
 	INC, DEC,       // AB   r[a] = ToNumber(r[b]) +/- 1
 	TONUMERIC,      // AB   r[a] = ToNumber(r[b])
 	TOSTRING,       // AB   r[a] = ToString(r[b])
+	CONCATN,        // ABC  r[a] = r[b] + ... + r[b + c - 1], all strings: a template literal
 
 	ADDK, SUBK, MULK, DIVK,             // ABC r[a] = r[b] op K[c] (a number constant)
 	// Fused compare-and-branch, always followed by a JMP word: when the comparison is false

@@ -1185,6 +1185,8 @@ fn void? Codegen.expr(&self, Node* e, uint dest)
 	}
 }
 
+const uint MAX_CONCAT = 32;
+
 fn void? Codegen.template(&self, Node* e, uint dest)
 {
 	Value first = self.string_const(e.list[0].name, e.list[0].flags.escaped, true)!;
@@ -1193,23 +1195,40 @@ fn void? Codegen.template(&self, Node* e, uint dest)
 		self.emit_abx(LOADK, dest, self.const_index(first)!);
 		return;
 	}
-	uint acc = self.alloc()!;
-	uint t = self.alloc()!;
-	self.emit_abx(LOADK, acc, self.const_index(first)!);
+	// Every non-empty piece goes in its own register, as a string, then one CONCATN joins them
+	// in a single allocation. A long template joins in chunks, each chunk's result leading the next.
+	uint start = self.fs.free_reg;
+	uint count = 0;
+	if (e.list[0].name.len)
+	{
+		self.emit_abx(LOADK, self.alloc()!, self.const_index(first)!);
+		count++;
+	}
 	foreach (i, part : e.list[1..])
 	{
-		if (i % 2 == 0)
+		bool is_expr = i % 2 == 0;
+		if (!is_expr && part.name.len == 0) continue;
+		if (count == MAX_CONCAT)
 		{
-			self.expr(part, t)!;
-			self.emit_abc(TOSTRING, t, t);
-			self.emit_abc(ADD, acc, acc, t);
-			continue;
+			self.emit_abc(CONCATN, start, start, count);
+			self.release(start + 1);
+			count = 1;
 		}
-		if (part.name.len == 0) continue;
-		self.emit_abx(LOADK, t, self.const_index(self.string_const(part.name, part.flags.escaped, true)!)!);
-		self.emit_abc(ADD, acc, acc, t);
+		uint r = self.alloc()!;
+		if (is_expr)
+		{
+			self.expr(part, r)!;
+			self.emit_abc(TOSTRING, r, r);
+		}
+		else
+		{
+			self.emit_abx(LOADK, r, self.const_index(self.string_const(part.name, part.flags.escaped, true)!)!);
+		}
+		self.release(r + 1);
+		count++;
 	}
-	self.emit_abc(MOVE, dest, acc);
+	self.emit_abc(CONCATN, dest, start, count);
+	self.release(start);
 }
 
 fn void? Codegen.object_literal(&self, Node* e, uint dest)

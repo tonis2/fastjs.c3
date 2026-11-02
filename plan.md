@@ -908,8 +908,16 @@ Each step is verified before the next:
     | incremental, async bench | 0.043 ms | 0.025–0.04 ms |
 - [x] `Context.gc_step(budget_us)` (`Vm.gc_step`): finishes the sweep and cache scan,
       advances a mark, and starts the next mark early at 3/4 of the threshold.
-- [ ] Size-class allocator: not started. Measure first; with lazy sweeping, `free()` is no
-      longer in a pause.
+- [x] **Size-class block allocator** (`Heap.block_alloc/block_free`):
+  - Blocks up to 256 bytes come from 64 KiB pages, with 16 classes and a free list each,
+    linked through `GcHeader.next`. Bigger blocks use `calloc`.
+  - Pages live until the heap is freed. The leftover of a page is spilled onto the free
+    lists.
+  - The profile of `bench/strings.js` had libc malloc/free at ~37%. Results: async 3.6× →
+    4.5×, strings 1.0× → 1.6×.
+  - **Not `@inline`:** inlining it into the interpreter made `bench/loop.js`, which never
+    allocates, go from 0.35 s to 0.43 s. `run()`'s code layout is that sensitive (adding an
+    opcode moves `loop` by ±10% too), so compare interpreter changes over several runs.
 - Original plan:
 
 1. **`Context.gc_step(budget_us)`**
@@ -954,7 +962,16 @@ Each step is verified before the next:
        box `.value =` stores outside the helpers.
    - **Target:** no GC pause over 0.5 ms in any three.c3 example (`FASTJS_GC_TRACE`).
 
-### Milestone 15 — Speed
+### Milestone 15 — Speed (in progress)
+- [x] **String append buffers** (`string.c3`):
+  - `JsString.chars` points at `inline_chars` or into a `JsStrBuf` (HeapKind STRBUF), whose
+    strings are all prefixes. `concat` appends in place when its left side is the buffer's
+    end and there is room; results of 64 units or more get a buffer twice their size.
+  - `intern` copies a buffered string first: atoms are never traced, so they must own their
+    units.
+- [x] **`CONCATN a b n`:** template literals join their pieces in one allocation, in chunks of
+      32 (`Heap.concat_many`). `test/js/strings2.js` covers the sharing cases.
+- [x] Strings bench: 0.62× → 1.66× QuickJS, with the allocator.
 
 1. **String append buffers** (instead of ropes; data stays contiguous, so nothing needs flattening)
    - `JsString.data` becomes a pointer, either inline after the header or into a shared `StrBuf`

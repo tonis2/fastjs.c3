@@ -611,6 +611,10 @@ fn Value? Vm.run(&self)
 				}
 			case TOSTRING:
 				r[a] = string_value(self.to_string(r[ins_b(ins)])!);
+			case CONCATN:
+				// The pieces are in registers, safe from a collection.
+				self.maybe_gc();
+				r[a] = string_value(self.heap.concat_many(r + ins_b(ins), ins_c(ins)) ?? self.oom()~!);
 
 			case ADDK:
 			case SUBK:

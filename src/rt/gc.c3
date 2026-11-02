@@ -280,6 +280,9 @@ fn void trace(MarkStack* stack, GcHeader* h)
 	switch (h.kind)
 	{
 		case STRING:
+			JsString* str = (JsString*)h;
+			if (str.buffered()) mark_ptr(stack, str.buffer());
+		case STRBUF:
 			break;
 		case SYMBOL:
 			mark_value(stack, ((JsSymbol*)h).description);

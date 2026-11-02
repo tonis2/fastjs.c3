@@ -84,6 +84,8 @@ enum HeapKind : char
 	OBJECT,
 	BOX,
 	SHAPE,
+	// A JsStrBuf: the units of strings built by appending.
+	STRBUF,
 }
 
 <*

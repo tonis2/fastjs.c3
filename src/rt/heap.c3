@@ -1,4 +1,5 @@
 module fastjs::rt;
+import std::collections::list;
 
 excuse OUT_OF_MEMORY;
 
@@ -49,6 +50,11 @@ struct Heap
 	// Open addressing on the string hash; null marks a free slot. Atoms are never collected yet.
 	JsString*[] atoms;
 	usz atom_count;
+	// Small blocks come from pages, one free list per size class (see block_alloc).
+	GcHeader*[SIZE_CLASSES] free_lists;
+	char* page_next;
+	char* page_end;
+	List {char*} pages;
 	// Shape-tree root for objects with a null prototype.
 	Shape* null_root;
 }
@@ -61,6 +67,7 @@ fn void Heap.init(&self, usz limit = 0)
 	*self = { .limit = limit, .sweep_ratio = 2 };
 	self.atoms = mem::new_array(JsString*, 256);
 	self.gray.stack.init(mem, 256);
+	self.pages.init(mem);
 }
 
 <*
@@ -76,12 +83,14 @@ fn void Heap.free(&self)
 		{
 			GcHeader* next = h.next;
 			finalize(h);
-			free(h);
+			if (h.size > MAX_SMALL_BLOCK) free(h);
 			h = next;
 		}
 	}
 	free(self.atoms);
 	self.gray.stack.free();
+	foreach (page : self.pages) free(page);
+	self.pages.free();
 	*self = {};
 }
 
@@ -115,7 +124,7 @@ fn void*? Heap.alloc(&self, HeapKind kind, usz size)
 {
 	self.take_growth();
 	if (self.limit && self.bytes + size > self.limit) self.make_room(size)!;
-	GcHeader* h = (GcHeader*)mem::calloc((sz)size);
+	GcHeader* h = self.block_alloc(size);
 	h.kind = kind;
 	h.size = (uint)size;
 	if (kind == SHAPE)
@@ -149,6 +158,12 @@ fn void*? Heap.alloc(&self, HeapKind kind, usz size)
 fn JsString* Heap.intern(&self, JsString* s)
 {
 	if (s.atom) return s;
+	// Atoms are never swept and so never traced: one must own its units.
+	if (s.buffered())
+	{
+		JsString* copy = s.wide ? self.string_from_units(s.wide_units()) ?? null : self.string_from_latin1(s.narrow_units()) ?? null;
+		if (copy) s = copy;
+	}
 	uint hash = s.hash_code();
 	usz mask = self.atoms.len - 1;
 	usz i = hash & mask;
@@ -193,8 +208,9 @@ fn void Heap.release_block(&self, GcHeader* h)
 	self.bytes -= h.size + extra_size(h);
 	self.blocks--;
 	finalize(h);
-	if (self.poison) mem::set(h, 0xEE, h.size);
-	free(h);
+	usz size = h.size;
+	if (self.poison) mem::set(h, 0xEE, (sz)size);
+	self.block_free(h, size);
 	self.freed++;
 }
 
@@ -286,4 +302,72 @@ fn void Heap.regray(&self, GcHeader* h)
 	if (!h.marked || (h.flags & GC_GRAY)) return;
 	h.flags |= GC_GRAY;
 	self.gray.stack.push(h);
+}
+
+// ---- the block allocator ----
+//
+// Blocks of up to MAX_SMALL_BLOCK bytes are carved from 64 KiB pages, rounded up to a multiple
+// of 16, and a freed one goes on its size class's free list (linked through GcHeader.next) for
+// the next allocation of that size. Bigger blocks are calloc'd. Pages are kept until the heap
+// is freed. Strings, boxes, shapes and most objects are small, so allocating and sweeping them
+// no longer goes through malloc and free.
+
+const usz MAX_SMALL_BLOCK = 256;
+const usz SIZE_CLASSES = MAX_SMALL_BLOCK / 16;
+const usz PAGE_SIZE = 64 * 1024;
+
+fn usz size_class(usz size) @inline => (size + 15) / 16 - 1;
+
+<*
+ A zeroed block of at least size bytes.
+*>
+fn GcHeader* Heap.block_alloc(&self, usz size)
+{
+	if (size > MAX_SMALL_BLOCK) return (GcHeader*)mem::calloc((sz)size);
+	usz c = size_class(size);
+	GcHeader* h = self.free_lists[c];
+	usz rounded = (c + 1) * 16;
+	if (h)
+	{
+		self.free_lists[c] = h.next;
+		mem::clear(h, (sz)rounded);
+		return h;
+	}
+	if (self.page_next + rounded > self.page_end)
+	{
+		// What is left of the old page goes on the free lists rather than to waste.
+		self.spill_page();
+		char* page = mem::calloc(PAGE_SIZE);
+		self.pages.push(page);
+		self.page_next = page;
+		self.page_end = page + PAGE_SIZE;
+	}
+	h = (GcHeader*)self.page_next;
+	self.page_next += (sz)rounded;
+	return h;
+}
+
+fn void Heap.block_free(&self, GcHeader* h, usz size)
+{
+	if (size > MAX_SMALL_BLOCK)
+	{
+		free(h);
+		return;
+	}
+	usz c = size_class(size);
+	h.next = self.free_lists[c];
+	self.free_lists[c] = h;
+}
+
+fn void Heap.spill_page(&self)
+{
+	while (self.page_next && self.page_next + 16 <= self.page_end)
+	{
+		usz left = (usz)(self.page_end - self.page_next);
+		usz take = min(left, MAX_SMALL_BLOCK) / 16 * 16;
+		GcHeader* h = (GcHeader*)self.page_next;
+		self.page_next += (sz)take;
+		h.next = self.free_lists[take / 16 - 1];
+		self.free_lists[take / 16 - 1] = h;
+	}
 }
