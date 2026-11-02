@@ -1,0 +1,33 @@
+// Arrays: literals, holes, length, methods, iteration, destructuring.
+const a = [1, 2, 3];
+a.push(4, 5);
+console.log(a, a.length, a.pop(), a);
+console.log(a.indexOf(3), a.indexOf(9), a.join("-"), String(a));
+const holes = [1, , 3];
+console.log(holes, holes.length, holes[1]);
+const grow = [];
+grow[3] = "d";
+console.log(grow, grow.length);
+grow.length = 1;
+console.log(grow);
+console.log(a.map(x => x * 2), [..."hé!"], [...a, ...[9]]);
+let sum = 0;
+a.forEach(v => { sum += v; });
+console.log(sum);
+for (const v of [10, 20]) console.log("of", v);
+const [first, , third = "def", ...others] = [1, 2, undefined, 4, 5];
+console.log(first, third, others);
+let p = 1, q = 2;
+[p, q] = [q, p];
+console.log(p, q);
+const { x, y: why, z = "zz" } = { x: 1, y: 2 };
+console.log(x, why, z);
+const nested = { list: [{ v: "deep" }] };
+const { list: [{ v }] } = nested;
+console.log(v, Array.isArray(a), Array.isArray({}), new Array(3).length, Array(1, 2));
+const { a: first2, ...restObj } = { a: 1, b: 2, c: 3, 0: "zero" };
+console.log(first2, restObj);
+const { ["b"]: bee, ...noB } = { a: 1, b: 2 };
+console.log(bee, noB);
+function opts({ size = 1, ...others } = {}) { return [size, others]; }
+console.log(opts(), opts({ size: 5, color: "red" }));

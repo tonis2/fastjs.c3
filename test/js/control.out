@@ -1,0 +1,13 @@
+total 16
+n 5
+0 0
+0 1
+1 0
+1 1
+2 0
+2 1
+A B C
+one two  | two  | other  | string three 
+zero
+empty array is truthy empty string is falsy
+x 4

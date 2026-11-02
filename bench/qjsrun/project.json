@@ -1,0 +1,10 @@
+{
+	// Runs a script with QuickJS (three.c3's prebuilt archive) and prints its completion value,
+	// so bench/run.sh can compare against it. Build: cd bench/qjsrun && c3c build
+	"langrev": "1",
+	"sources": ["src/**"],
+	"dependency-search-paths": ["../../../three.c3/lib"],
+	"dependencies": ["quickjs"],
+	"output": "build",
+	"targets": { "qjsrun": { "type": "executable", "opt": "O3" } }
+}

@@ -1,0 +1,19 @@
+Float32Array(4) [ 1.5, 0.10000000149011612, -3, 0 ] 4 undefined 16 4
+Int8Array(4) [ 127, -128, 127, 44 ] Uint8Array(4) [ 255, 0, 255, 3 ] Uint8ClampedArray(5) [ 255, 0, 2, 2, 254 ]
+Uint8Array(4) [ 4, 3, 2, 1 ] 16 4 true ArrayBuffer {
+  [Uint8Contents]: <00 00 00 00 04 03 02 01 00 00 00 00 00 00 00 00>,
+  [byteLength]: 16
+}
+Float64Array(6) [ 1, 2, 30, 4, 5, 6 ] Float64Array(2) [ 30, 4 ] 2 Float64Array(2) [ 5, 6 ]
+Float32Array(6) [ 1, 5, 5, 0, 7, 8 ] Float32Array(6) [ 1, 5, 5, 0, 7, 8 ]
+[ 5, 6 ] [ -1, 2 ] true false
+6 4294967295 0.3333333432674408
+Float32Array(10) [
+    0, 0.5,   1, 1.5,   2,
+  2.5,   3, 3.5,   4, 4.5
+] 4 true 0|0.5|1|1.5|2|2.5|3|3.5|4|4.5
+Float32Array(9) [
+  0, 0, 0, 1, 2,
+  3, 0, 0, 0
+]
+Uint8Array(3) [ 1, 1, 1 ] {"t":{"0":1,"1":2}}

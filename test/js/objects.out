@@ -1,0 +1,17 @@
+{
+  '2': 'two',
+  '10': 'ten',
+  a: 1,
+  'b-c': 2,
+  dynamic: 3,
+  nested: { deep: [ 1, 2 ] }
+}
+1 2 3 ten two 2 undefined
+[ '2', '10', 'a', 'b-c', 'dynamic', 'nested' ]
+11 false true true false
+{ shorthand: 5, x: 1, y: 3 }
+68
+100 { celsius: 100, fahrenheit: [Getter/Setter] }
+{ x: 3, y: 1, z: 1 }
+[ '1', 'b', 'a' ]
+{} { a: {} } { a: { b: { c: [Object] } } }

@@ -1,0 +1,16 @@
+boom Error true false
+ReferenceError undefinedVariable is not defined
+TypeError Cannot read properties of undefined (reading 'prop')
+TypeError
+finally runs
+from try
+finally wins
+[ 'body0', 'fin0', 'fin1', 'body2', 'fin2', 'fin3' ]
+inner finally
+caught TypeError: inner
+custom 1
+ReferenceError Cannot access 'later' before initialization
+TypeError Assignment to constant variable.
+RangeError: bottom
+true
+still running

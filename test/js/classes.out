@@ -1,0 +1,18 @@
+Vec { x: 3, y: 4 } 5 Vec(4, 5) Vec { x: 0, y: 0 } 3
+6 8 [ 'x', 'y' ] function Vec 0
+Critter { alive: true, name: 'bug', speed: 3 } Boss { alive: true, name: 'big', speed: 2 }
+critter:entity 3 boss:critter:entity 4 critter < entity Boss(big) critter < entity
+true true true false
+[ 'bug', 'big', 'x' ] 8 [ 'alive', 'name', 'speed' ] 2
+false Boss n
+static computed computed method
+true Class constructor Vec cannot be invoked without 'new'
+ReferenceError Must call super constructor in derived class before accessing 'this' or returning from derived constructor
+ReferenceError Super constructor may only be called once
+true true bad thing 42 AppError AppError: bad thing
+Anon Inner Inner
+[
+  [class Vec] { count: 3, zero: Vec { x: 0, y: 0 } },
+  [class Critter extends Entity] { capacity: 8 },
+  [class Anon]
+] []

@@ -1,0 +1,16 @@
+true false true false
+file.txt true
+a [ 'aabbb', 'aa', 'bbb', index: 1, input: 'xaabbb', groups: undefined ] [ 'bob', 'site' ]
+[ '1', '22', '333' ] null [ '2024', '11', '02' ]
+[ 'a', 'b', 'c', 'd' ] [ 'a', 'b', 'c', '' ] [ 'a', 'b', 'c' ] [ 'x' ]
+Smith, John bbb camel_case_name
+price: 20@7, 40@11 -a-b-c- 2
+1 2 2 3 true 6
+true false true false true true
+ababab a aaa false true
+foo false xyz ab12
+2024 11 3
+[ '1', '2' ] gi x /a\/b/g true
+true true true true
+[ 'b', undefined, 'b', index: 0, input: 'b', groups: undefined ] \/
+SyntaxError

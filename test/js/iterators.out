@@ -1,0 +1,17 @@
+symbol Symbol(tag) tag Symbol(tag) 1 [ 'plain' ] { plain: 2, Symbol(tag): 1 }
+false Symbol(Symbol.iterator)
+[ 1, 2, 3, 4 ] [ 1, 2, 3, 4 ] 4
+odd 1
+odd 3
+10 11 [ 12, 13, 14 ]
+2 nan zero true 5 true 4 Map(4) { 'b' => 2, 'c' => 3, NaN => 'nan', 0 => 'zero' }
+entry b 2
+entry c 3
+entry NaN nan
+entry 0 zero
+[ 'b', 'c', NaN, 0 ] [ 2, 3, 'nan', 'zero' ] 4
+Set(3) { 1, 2, 4 } 4 true [ 3, 1, 2, 4 ] true [ 1, 2, 4 ]
+[ 10, 20, 40, 'b=2', 'c=3', 'NaN=nan', '0=zero' ]
+object key undefined Map(0) {} Set(0) {}
+[ 'h', 'é', 'l', 'l', 'o' ] [ 'aa', 'bb' ] [ [ 0, 1 ], [ 1, 2 ] ] [ 0, 1 ]
+{ value: 10, done: false } { value: 20, done: false } { value: undefined, done: true }

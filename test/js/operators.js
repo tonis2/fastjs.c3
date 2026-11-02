@@ -1,0 +1,25 @@
+// Equality, nullish, optional chaining, updates, logical assignment.
+console.log(1 == "1", 1 === "1", null == undefined, null === undefined, NaN == NaN, 0 == "", "0" == false);
+console.log([1] == 1, null == 0, undefined == 0, "abc" < "abd", "a" < "B", 2 < "10", "2" < "10");
+const o = { a: { b: null }, f() { return "called"; } };
+console.log(o?.a?.b, o.x?.y.z, o.f?.(), o.g?.(), o?.["a"]);
+console.log(null ?? "default", 0 ?? "zero kept", false || "or", 0 && "and");
+let i = 5;
+console.log(i++, i, ++i, i--, --i);
+let s = "5";
+s++;
+console.log(s, typeof s);
+let la = null;
+la ??= "set";
+let lb = 1;
+lb ||= "not set";
+let lc = 1;
+lc &&= "replaced";
+console.log(la, lb, lc);
+const arr = [1, 2];
+arr[0] += 10;
+arr[1] **= 3;
+console.log(arr);
+console.log(!!"x", !0, void 0, typeof void 0, (1, 2, 3));
+console.log(10 > 9 > 8, 3 > 2 >= 1, "b" > "a");
+console.log(-(-0) === 0, 1 / -0, Math.max(-0, 0));
