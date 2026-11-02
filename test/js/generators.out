@@ -1,0 +1,48 @@
+{ value: 0, done: false } { value: 1, done: false } { value: 2, done: false } { value: 'end', done: true } { value: undefined, done: true }
+[ 0, 1, 2, 3, 4 ] [ 0, 1, 2 ] Set(4) { 0, 1, 2, 3 }
+9
+[ 1, 2, [] ] [ 1, 5, [ 6, 7 ] ]
+default evaluated
+created
+body runs
+{ value: 1, done: false } { value: 10, done: false } { value: 14, done: false }
+a 30 arr [ 30, 40 ]
+[ 'first', 'second', 'x', 'y', 'm1', 'm2', 60 ]
+[ 0, 1, 2 ]
+[ 1, 2, 3 ]
+got 1
+cleanup
+cleanup
+{ value: 42, done: true } { value: undefined, done: true }
+{ value: 1, done: true } { value: undefined, done: true }
+after
+{ value: 'from finally', done: false } { value: 'r', done: true } { value: undefined, done: true }
+caught boom
+{ value: 2, done: false } { value: undefined, done: true }
+not started: early
+{ value: undefined, done: true }
+TypeError Generator is already running
+inner finally
+[
+  'a', 'b', 'r', 1,
+  2,   'h', 'i'
+]
+inner finally
+{ value: 'stop', done: true } { value: undefined, done: true }
+inner caught E1
+inner caught E2
+{ value: 'ready', done: false } { value: 'ready', done: false }
+noisy closed
+noisy closed
+found 2 none
+noisy closed
+1 2
+[ 1, 2, 3, 4 ]
+Map(2) { 'a' => 1, 'b' => 2 } { a: 1, b: 2 }
+[ 1, 2, 3 ] [ 2, 3, 4, 5 ]
+[
+  0, 1,  1,  2,  3,
+  5, 8, 13, 21, 34
+]
+200098890
+Object [Generator] {} [GeneratorFunction: count] function true

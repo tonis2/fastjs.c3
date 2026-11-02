@@ -1,0 +1,63 @@
+f start 1
+after call Promise { <pending> }
+iife
+badSync returned true
+f start 10
+sync end
+A 0
+B 0
+Promise { 4 } Promise { <pending> } function Promise
+f got 1
+a 1
+iife 2
+micro
+badSync caught RangeError
+in catch TypeError
+fin
+finRet finally
+rejected 5
+executor in executor
+first wins 1
+f got 10
+all empty []
+finally
+finally2
+thenable then
+thenable then
+arrow 3
+A 1
+B 1
+tick 1
+withResolvers done
+then 2
+b
+iife 3
+caught nope
+ok
+finRet value
+all rejects no
+settled [
+  { status: 'fulfilled', value: 1 },
+  { status: 'rejected', reason: 2 }
+]
+race fast
+any any
+any failed [ 1, 2 ]
+awaited thenable T
+resolved thenable T
+cycle TypeError Chaining cycle detected for promise #<Promise>
+arrow this 5
+A 2
+ap
+tick 2
+all [ 1, 2, 20 ]
+method base+7
+rp
+tick 3
+after finally 9
+after finally2 8
+tick 4
+loopOf [ 1, 4, 9 ]
+tickers [ 'A', 'B' ]
+recurse 200
+sum 49995000

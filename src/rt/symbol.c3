@@ -245,6 +245,18 @@ fn bool? Vm.iter_next(&self, Value* state, Value* out)
 	{
 		return self.builtin_iter_step((JsIterator*)state[0].as_object(), out);
 	}
+	// So do generators, which go straight to resume().
+	if (state[0].is_object() && state[0].as_object().kind == COROUTINE && state[1].is_function())
+	{
+		JsFunction* next = (JsFunction*)state[1].as_object();
+		if (next.native == &native_generator_resume && next.magic == 0)
+		{
+			Value v;
+			if (self.generator_step((JsCoroutine*)state[0].as_object(), UNDEFINED, NEXT, &v)!) return false;
+			*out = v;
+			return true;
+		}
+	}
 	Value result = self.call(state[1], state[0], {})!;
 	if (!result.is_object()) return self.throw_error(TYPE_ERROR, "Iterator result %s is not an object", self.describe(result))~;
 	if (truthy(self.get(result, self.atoms.done)!)) return false;
@@ -278,4 +290,18 @@ fn JsArray*? Vm.iterable_to_array(&self, Value v)
 	Value item;
 	while (self.iter_next(&state, &item)!) out.push(item);
 	return out;
+}
+
+<*
+ Turn a fast-path iteration state (array, index) into a real iterator object and its next
+ method, for yield*, which talks to the iterator directly.
+
+ @return? THROWN
+*>
+fn void? Vm.wrap_fast_iterator(&self, Value* state)
+{
+	Value it = self.new_iterator(state[0], ARRAY_VALUES)!;
+	((JsIterator*)it.as_object()).index = (uint)state[1].as_int();
+	state[0] = it;
+	state[1] = self.get(it, self.atoms.next)!;
 }

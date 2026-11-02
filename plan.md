@@ -469,6 +469,67 @@ the scanned range when the callee returned. The GC then set mark bits in freed m
   - Full Unicode case mapping: Latin-1, Greek and Cyrillic only for now
   - String.raw and tagged templates
 
+### Phase 7: coroutines (done)
+- [x] **Coroutines** (`src/rt/coro.c3`). A generator or async call is a `JsCoroutine` (ObjectKind
+      COROUTINE).
+  - While it runs, its registers are an ordinary frame on the VM stack (`Frame.coroutine` points
+    back at it).
+  - When it suspends, the register window is copied into the coroutine. `Vm.resume` copies it
+    back as a `stop` frame and runs it from native code.
+  - Windows are small (≤ 250 registers, usually under 30), so copying beats per-coroutine stacks
+    in simplicity, and is cheap enough.
+  - The plan's "segmented stacks" idea is dropped.
+- [x] Ops:
+  - `GENSTART`: after parameter setup, suspend and return the generator. Defaults run at the
+    call, as in the spec.
+  - `ASYNCSTART`: pc 0 of an async function; creates the promise, so a failing parameter default
+    rejects it.
+  - `YIELD a b c`: the resume value goes to r[a] and the mode to r[b]. Codegen turns mode 2
+    (`return()`) into a normal `return` through the finally machinery; the VM throws `throw()`
+    at the yield.
+  - `AWAIT a`: suspends and leaves like a `return` (via `nextcase RET`), handing the caller the
+    promise.
+  - `YSTEP`: one `yield*` step. `GETITER` with c=1 wraps the array fast path into a real
+    iterator.
+- [x] `RET` in a coroutine frame finishes it; an async function resolves its promise and returns
+      that.
+  - `unwind` turns an exception leaving an async frame into a rejection, then returns
+    `HANDLED`/`RETURNED`.
+- [x] Promise (`JsPromise`, ObjectKind PROMISE) with spec job ordering. `async.js` matches node's
+      microtask order exactly, including thenables (+2 ticks) and returning a promise from an
+      async function.
+  - `then/catch/finally`
+  - `resolve/reject/all/allSettled/any/race/withResolvers`
+  - `queueMicrotask`
+  - `await` of a non-object skips the promise allocation.
+- [x] Job queue:
+  - `Vm.run_job()` runs one job and returns false when the queue is empty. A
+    `queueMicrotask` callback that throws returns THROWN.
+  - `Vm.jobs_waiting()` reports whether any are pending.
+  - `Vm.take_unhandled()` hands back unhandled rejections; `fjs` reports them as
+    "Uncaught (in promise)".
+  - Jobs from `job_head` onward, and `current_job`, are GC roots. The queue compacts itself
+    during long drains.
+- [x] GC:
+  - `native_generator_resume` doesn't count toward `native_depth`, so generator bodies can
+    collect.
+  - A job runs with `native_depth == 0`, so async bodies collect too.
+  - Coroutines trace their saved registers, and promises trace their reactions.
+- [x] Iterator closing:
+  - `break` or `return` out of for-of calls `return()` on the iterator (`JumpCtx.closes_iterator`).
+  - Array destructuring closes an iterator it didn't exhaust (ITERSTEP clears r[a] when done).
+- [x] inspect prints:
+  - `Promise { 1 }`, `Promise { <pending> }`, `Promise { <rejected> x }`
+  - `Object [Generator] {}`
+  - `[AsyncFunction: f]`, `[GeneratorFunction: g]`
+- Not done:
+  - async generators and `for await` (three.c3 uses neither)
+  - closing the iterator when a for-of body throws
+  - per-function `g.prototype` objects: generator objects inherit `%GeneratorPrototype%` directly
+  - Promise subclassing / species
+- Perf idea: resume generators inside the interpreter loop (FORNEXT pushes the frame, YIELD
+  returns like RET) instead of a nested `execute()` per step.
+
 ### Status of three.c3 scripts (compile only, `fjs --dump`)
 - All 12 examples compile (2026-11-02).
 - The prelude needs ES modules (phase 8).
@@ -556,6 +617,17 @@ See **Phases** above. Break each one down when it starts.
   - All 12 three.c3 examples compile.
   - **Next:** phase 7 (generators, Promise, async/await, the job queue), then phase 8 (ES modules
     for the prelude, the qjs-compatible API, then switching three.c3 over).
+
+- 2026-11-02: Phase 7 done: generators (with `yield*`, return/throw, finally), async/await,
+  Promise and the job queue.
+  - `test/js/run.sh`: 17 files pass (new: generators, async), also under `--gc-stress`.
+    `c3c test`: 43 pass.
+  - New benchmarks:
+    - `bench/async.js`: 3.5× QuickJS
+    - `bench/generators.js`: 1.5×
+    - `qjsrun` now drains jobs and reads `__result`.
+  - **Next:** phase 8. ES modules for the prelude, then the qjs-compatible API (`src/api.c3`),
+    then switching three.c3 over.
 
 **How to run things:**
 ```sh

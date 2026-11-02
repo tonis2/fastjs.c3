@@ -3,26 +3,45 @@ import std::math, std::collections::list;
 
 <*
  Run from the top frame until a frame marked `stop` returns, handling exceptions on the way.
+ With `throwing`, the pending exception is first thrown at the top frame's current instruction.
 
  @return? THROWN
 *>
-fn Value? Vm.execute(&self)
+fn Value? Vm.execute(&self, bool throwing = false)
 {
 	while (true)
 	{
-		Value? v = self.run();
-		if (try v) return v;
-		if (!self.unwind()) return THROWN~;
+		if (!throwing)
+		{
+			Value? v = self.run();
+			if (try v) return v;
+		}
+		throwing = false;
+		Value result;
+		switch (self.unwind(&result))
+		{
+			case HANDLED: continue;
+			case PROPAGATE: return THROWN~;
+			case RETURNED: return result;
+		}
 	}
 }
 
-<*
- Find a handler for the pending exception, popping frames that have none. Stops after popping
- a `stop` frame, whose native caller then sees the exception.
+enum Unwind : char
+{
+	// A handler was found, or an async call turned the exception into its rejected promise.
+	HANDLED,
+	// The exception leaves a `stop` frame; its native caller sees it.
+	PROPAGATE,
+	// A `stop` frame that was an async call returned its rejected promise instead.
+	RETURNED,
+}
 
- @return "Whether a handler was found"
+<*
+ Find a handler for the pending exception, popping frames that have none. An async call doesn't
+ pass the exception on: its promise is rejected and returned as the call's value.
 *>
-fn bool Vm.unwind(&self)
+fn Unwind Vm.unwind(&self, Value* result)
 {
 	while (self.frame_count > 0)
 	{
@@ -35,19 +54,32 @@ fn bool Vm.unwind(&self)
 				self.stack[f.base + h.reg] = self.exception;
 				f.pc = h.handler;
 				self.stack_top = f.base + f.proto.nregs;
-				return true;
+				return HANDLED;
 			}
 		}
 		bool stop = f.stop;
+		uint base = f.base;
+		JsCoroutine* c = f.coroutine;
 		self.frame_count--;
 		if (self.frame_count > 0)
 		{
 			Frame* caller = &self.frames[self.frame_count - 1];
 			self.stack_top = caller.base + caller.proto.nregs;
 		}
-		if (stop) return false;
+		if (c)
+		{
+			c.finish();
+			if (c.is_async)
+			{
+				self.reject_with_exception((JsPromise*)c.promise.as_object());
+				self.stack[base - 1] = c.promise;
+				*result = c.promise;
+				return stop ? RETURNED : HANDLED;
+			}
+		}
+		if (stop) return PROPAGATE;
 	}
-	return false;
+	return PROPAGATE;
 }
 
 fn Value int_or_double(long v) @inline
@@ -900,9 +932,11 @@ fn Value? Vm.run(&self)
 				if (fun.native)
 				{
 					Value this_value = construct ? EMPTY : r[a + 1];
-					self.native_depth++;
+					// Resuming a generator holds nothing a collection could free, so it doesn't block one.
+					uint depth = fun.native == &native_generator_resume ? 0 : 1;
+					self.native_depth += depth;
 					Value? result = fun.native(self, this_value, r[a + 2:argc], fun);
-					self.native_depth--;
+					self.native_depth -= depth;
 					r[a] = result!;
 					self.stack_top = f.base + f.proto.nregs;
 					break;
@@ -923,7 +957,9 @@ fn Value? Vm.run(&self)
 				pc = 0;
 			case RET:
 			case RETUNDEF:
-				Value v = ins_op(ins) == RET ? r[a] : UNDEFINED;
+				// GENSTART and AWAIT finish here too, with the value to return in r[a].
+				Value v = ins_op(ins) == RETUNDEF ? UNDEFINED : r[a];
+				if (f.coroutine) v = self.coroutine_returned(f.coroutine, v);
 				if (f.construct && !v.is_object())
 				{
 					v = r[0];
@@ -1017,6 +1053,7 @@ fn Value? Vm.run(&self)
 
 			case GETITER:
 				self.get_iterator(r[ins_b(ins)], r + a)!;
+				if (ins_c(ins) && r[a + 1].is_int()) self.wrap_fast_iterator(r + a)!;
 			case FORNEXT:
 				if (r[a + 1].is_int())
 				{
@@ -1042,16 +1079,58 @@ fn Value? Vm.run(&self)
 			case ITERCLOSE:
 				self.iter_close(r + a)!;
 			case ITERSTEP:
+				// An exhausted iteration has r[a] cleared, so ITERCLOSE knows not to close it.
 				Value item;
-				r[a + 2] = self.iter_next(r + a, &item)! ? item : UNDEFINED;
+				if (r[a].is_undefined() || !self.iter_next(r + a, &item)!)
+				{
+					item = UNDEFINED;
+					r[a] = UNDEFINED;
+				}
+				r[a + 2] = item;
 			case ITERREST:
 				JsArray* rest = self.heap.new_array(self.array_proto) ?? self.oom()~!;
 				r[ins_b(ins)] = object_value(rest);
 				Value item;
-				while (self.iter_next(r + a, &item)!) rest.push(item);
+				if (!r[a].is_undefined())
+				{
+					while (self.iter_next(r + a, &item)!) rest.push(item);
+				}
+				r[a] = UNDEFINED;
 			case FORINKEYS:
 				r[a] = self.for_in_keys(r[ins_b(ins)])!;
 				r[a + 1] = integer(0);
+
+			case GENSTART:
+				JsCoroutine* c = self.new_coroutine(f, false)!;
+				self.save_frame(c, f, pc);
+				c.state = SUSPENDED_START;
+				r[a] = object_value(c);
+				nextcase RET;
+			case ASYNCSTART:
+				JsCoroutine* c = self.new_coroutine(f, true)!;
+				c.promise = object_value(self.new_promise()!);
+				c.state = RUNNING;
+				f.coroutine = c;
+			case YIELD:
+				// Generator frames only ever run from resume(), as stop frames.
+				assert(f.stop, "generator frame is not a stop frame");
+				JsCoroutine* c = f.coroutine;
+				self.save_frame(c, f, pc);
+				c.state = SUSPENDED;
+				Value v = r[a];
+				self.frame_count--;
+				return v;
+			case AWAIT:
+				JsCoroutine* c = f.coroutine;
+				self.await_value(c, r[a])!;
+				self.save_frame(c, f, pc);
+				c.state = SUSPENDED;
+				// Leave like a return, handing the caller (or the job queue) the promise.
+				f.coroutine = null;
+				r[a] = c.promise;
+				nextcase RET;
+			case YSTEP:
+				if (self.yield_star_step(r + a)!) pc = (uint)((int)pc + ins_sbx(ins));
 		}
 	}
 }

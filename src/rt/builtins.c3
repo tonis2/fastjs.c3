@@ -89,6 +89,7 @@ fn void? Vm.init_builtins(&self)
 	self.define_value(self.global, "undefined", UNDEFINED, {})!;
 	self.init_lib()!;
 	self.init_regexp()!;
+	self.init_coroutines()!;
 }
 
 // ---- console ----

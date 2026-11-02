@@ -104,12 +104,20 @@ enum Op : char
 	CHECKTHIS,      // A    ReferenceError if r[a] is `this` before super()
 	GETSUPER,       // ABx  r[a] = super[K[bx]], with `this` as the receiver
 
-	GETITER,        // AB   iterate r[b]: r[a] = iterator state, r[a+1] = step state
+	GETITER,        // ABC  iterate r[b]: r[a] = iterator state, r[a+1] = step state; c = 1 always makes a real iterator
 	FORNEXT,        // AsBx r[a+2] = next value, or jump when done
 	ITERCLOSE,      // A    call iterator.return() when leaving a for-of early
 	ITERSTEP,       // A    r[a+2] = next value, or undefined when done (array destructuring)
 	ITERREST,       // AB   r[b] = array of the remaining values
 	FORINKEYS,      // AB   r[a] = enumerable string keys of r[b] (an array), r[a+1] = 0
+
+	GENSTART,       // A    a generator's parameters are set up: suspend, and return the generator object (via r[a])
+	ASYNCSTART,     //      an async function begins: create its promise
+	YIELD,          // ABC  suspend, yielding r[a]; on resume r[a] = the value sent, r[b] = the ResumeMode.
+	                //      c = 0: throw() throws at the yield; c = 1 (yield*): it is passed on as a mode
+	AWAIT,          // A    suspend until r[a] settles; on resume r[a] = its value, or its reason is thrown
+	YSTEP,          // AsBx yield* step: send r[a+2] with mode r[a+3] to iterator r[a] (next method r[a+1]);
+	                //      r[a+2] = the result's value; jump when done (r[a+3] stays 2 for a return)
 }
 
 macro uint encode_abc(Op op, uint a, uint b, uint c) => (uint)op | a << 8 | b << 16 | c << 24;
@@ -265,6 +273,7 @@ fn void FunctionProto.dump(&self, int depth = 0)
 			case JMPNOTNULLISH:
 			case JMPNOTUNDEF:
 			case FORNEXT:
+			case YSTEP:
 				io::printf("%d %d  -> %d", ins_a(ins), ins_sbx(ins), (int)pc + 1 + ins_sbx(ins));
 			case JMP:
 				io::printf("-> %d", (int)pc + 1 + ins_sax(ins));

@@ -51,7 +51,13 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 		Frame* f = &self.frames[i];
 		mark_ptr(stack, f.function);
 		mark_value(stack, f.new_target);
+		mark_ptr(stack, f.coroutine);
 	}
+	mark_ptr(stack, self.generator_proto);
+	mark_ptr(stack, self.promise_proto);
+	for (sz i = self.job_head; i < self.jobs.len(); i++) mark_job(stack, &self.jobs[i]);
+	mark_job(stack, &self.current_job);
+	foreach (v : self.unhandled) mark_value(stack, v);
 	mark_value(stack, self.exception);
 	mark_ptr(stack, self.global);
 	mark_ptr(stack, self.object_proto);
@@ -73,6 +79,13 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 	foreach (p : self.typed_protos) mark_ptr(stack, p);
 	mark_value(stack, self.sym_iterator);
 	mark_value(stack, self.sym_async_iterator);
+}
+
+fn void mark_job(MarkStack* stack, Job* job)
+{
+	mark_value(stack, job.handler);
+	mark_value(stack, job.target);
+	mark_value(stack, job.argument);
 }
 
 fn void trace(MarkStack* stack, GcHeader* h)
@@ -125,6 +138,20 @@ fn void trace(MarkStack* stack, GcHeader* h)
 				case REGEXP:
 					mark_value(stack, ((JsRegExp*)o).source);
 					mark_value(stack, ((JsRegExp*)o).flags);
+				case COROUTINE:
+					JsCoroutine* c = (JsCoroutine*)o;
+					mark_ptr(stack, c.function);
+					mark_value(stack, c.promise);
+					for (uint i = 0; i < c.nregs; i++) mark_value(stack, c.regs[i]);
+				case PROMISE:
+					JsPromise* p = (JsPromise*)o;
+					mark_value(stack, p.result);
+					foreach (r : p.reactions)
+					{
+						mark_value(stack, r.target);
+						mark_value(stack, r.on_fulfilled);
+						mark_value(stack, r.on_rejected);
+					}
 				case ACCESSOR:
 					Accessor* acc = (Accessor*)o;
 					mark_value(stack, acc.getter);

@@ -49,6 +49,8 @@ enum ObjectKind : char
 	TYPED_ARRAY,
 	ARRAY_BUFFER,
 	REGEXP,
+	COROUTINE,
+	PROMISE,
 }
 
 struct JsObject
@@ -369,6 +371,10 @@ fn void finalize(GcHeader* h)
 					if (!b.external) free(b.data);
 				case REGEXP:
 					finalize_regexp((JsRegExp*)o);
+				case COROUTINE:
+					free(((JsCoroutine*)o).regs);
+				case PROMISE:
+					((JsPromise*)o).reactions.free();
 				default:
 					break;
 			}

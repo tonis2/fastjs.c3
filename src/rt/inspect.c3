@@ -194,7 +194,10 @@ fn String? Vm.format_value(&self, InspectCtx* ctx, Value v, int recurse)
 			}
 			else
 			{
-				base = name.len ? string::tformat("[Function: %s]", name) : "[Function (anonymous)]";
+				String tag = "Function";
+				if (f.proto && f.proto.is_async) tag = "AsyncFunction";
+				if (f.proto && f.proto.is_generator) tag = "GeneratorFunction";
+				base = name.len ? string::tformat("[%s: %s]", tag, name) : string::tformat("[%s (anonymous)]", tag);
 			}
 		case REGEXP:
 			JsRegExp* re = (JsRegExp*)o;
@@ -221,6 +224,10 @@ fn String? Vm.format_value(&self, InspectCtx* ctx, Value v, int recurse)
 			open = string::tformat("%s(%d) {", name.len ? name : m.is_set ? "Set" : "Map", m.live);
 		case o.kind == ARRAY_BUFFER:
 			open = string::tformat("%s {", name.len ? name : "ArrayBuffer");
+		case o.kind == COROUTINE:
+			open = "Object [Generator] {";
+		case o.kind == PROMISE && (name == "Promise" || !name.len):
+			open = "Promise {";
 		case o.kind == ITERATOR:
 			JsIterator* it = (JsIterator*)o;
 			String what = it.iter_kind.ordinal <= IterKind.ARRAY_ENTRIES.ordinal ? "Array Iterator" : it.iter_kind.ordinal <= IterKind.MAP_ENTRIES.ordinal ? "Map Iterator" : "Set Iterator";
@@ -263,6 +270,16 @@ fn String? Vm.format_value(&self, InspectCtx* ctx, Value v, int recurse)
 				continue;
 			}
 			output.push(string::tformat("%s => %s", self.format_child(ctx, e.key, recurse)!, self.format_child(ctx, e.value, recurse)!));
+		}
+	}
+	else if (o.kind == PROMISE)
+	{
+		JsPromise* p = (JsPromise*)o;
+		switch (p.state)
+		{
+			case PENDING: output.push("<pending>");
+			case FULFILLED: output.push(self.format_child(ctx, p.result, recurse)!);
+			case REJECTED: output.push(string::tformat("<rejected> %s", self.format_child(ctx, p.result, recurse)!));
 		}
 	}
 	else if (o.kind == ARRAY_BUFFER)

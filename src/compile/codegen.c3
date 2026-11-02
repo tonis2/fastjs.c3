@@ -36,6 +36,9 @@ struct JumpCtx
 	List {FinallyExit} exits;
 	bool has_return;
 	uint next_code;
+	// A for-of loop: leaving it early calls the iterator's return(), whose state starts here.
+	bool closes_iterator;
+	uint iter_reg;
 }
 
 struct FuncState
@@ -498,6 +501,9 @@ fn FunctionProto*? Codegen.compile_function(&self, Node* node, String name)
 		self.emit_abc(RETUNDEF, 0);
 		return self.end_function(&fs, node, name, 0, false);
 	}
+	if (node.flags.is_async && node.flags.generator) return self.unsupported(node, "async generators")~;
+	// An async call makes its promise first, so even a failing parameter default rejects it.
+	if (node.flags.is_async) self.emit_abc(ASYNCSTART, 0);
 	if (info.self_binding)
 	{
 		Binding* b = info.self_binding;
@@ -539,6 +545,13 @@ fn FunctionProto*? Codegen.compile_function(&self, Node* node, String name)
 	else
 	{
 		self.enter_scope(info.scope)!;
+		if (node.flags.generator)
+		{
+			// Parameters are set up when the generator is called; the body waits for next().
+			uint t = self.alloc()!;
+			self.emit_abc(GENSTART, t);
+			self.release(t);
+		}
 		foreach (s : node.a.list) self.stmt(s)!;
 		self.emit_abc(RETUNDEF, 0);
 	}
@@ -654,6 +667,8 @@ fn void? Codegen.assign_pattern(&self, Node* p, uint src, bool init)
 						self.assign_pattern(el, base + 2, init)!;
 				}
 			}
+			// Stopping before the iterator is done tells it so.
+			if (!p.list.len || p.list[^1].kind != REST) self.emit_abc(ITERCLOSE, base);
 		case OBJECT_PATTERN:
 			if (p.list.len == 0)
 			{
@@ -985,9 +1000,19 @@ fn void? Codegen.expr(&self, Node* e, uint dest)
 		case REGEX:
 			self.regex_literal(e, dest)!;
 		case YIELD:
-			return self.unsupported(e, "generators")~;
+			if (e.flags.delegate)
+			{
+				self.yield_star(e, dest)!;
+			}
+			else
+			{
+				self.yield_expr(e, dest)!;
+			}
 		case AWAIT:
-			return self.unsupported(e, "async functions")~;
+			uint v = dest == DISCARD ? self.alloc()! : dest;
+			self.expr(e.a, v)!;
+			self.fs.line = e.line;
+			self.emit_abc(AWAIT, v);
 		case SUPER:
 			return self.fail(e, "'super' keyword unexpected here")~;
 		default:
@@ -1430,6 +1455,59 @@ fn void? Codegen.construct(&self, Node* e, uint dest)
 	self.release(base);
 }
 
+// ---- generators ----
+
+<*
+ `yield v`: suspend with v. A return() sent in comes back as mode 2 and returns from here,
+ running any finally blocks; a throw() is thrown at the yield by the VM.
+*>
+fn void? Codegen.yield_expr(&self, Node* e, uint dest)
+{
+	uint saved = self.fs.free_reg;
+	uint v = self.alloc()!;
+	uint mode = self.alloc()!;
+	if (e.a)
+	{
+		self.expr(e.a, v)!;
+	}
+	else
+	{
+		self.emit_abc(LOADUNDEF, v);
+	}
+	self.fs.line = e.line;
+	self.emit_abc(YIELD, v, mode, 0);
+	uint resumed = self.emit_jump(JMPF, mode)!;
+	self.return_out(self.fs.jumps, v)!;
+	self.patch(resumed)!;
+	if (dest != DISCARD) self.emit_abc(MOVE, dest, v);
+	self.release(saved);
+}
+
+<*
+ `yield* iterable`: forward next/throw/return to an inner iterator until it is done. The four
+ registers are [iterator, next, value, mode], as YSTEP expects.
+*>
+fn void? Codegen.yield_star(&self, Node* e, uint dest)
+{
+	uint saved = self.fs.free_reg;
+	uint base = self.alloc(4)!;
+	self.expr(e.a, base + 2)!;
+	self.fs.line = e.line;
+	self.emit_abc(GETITER, base, base + 2, 1);
+	self.emit_abc(LOADUNDEF, base + 2);
+	self.emit((uint)rt::encode_asbx(LOADI, base + 3, 0));
+	uint top = self.pc();
+	uint done = self.emit_jump(YSTEP, base)!;
+	self.emit_abc(YIELD, base + 2, base + 3, 1);
+	self.jump_back(JMP, 0, top)!;
+	self.patch(done)!;
+	uint finished = self.emit_jump(JMPF, base + 3)!;
+	self.return_out(self.fs.jumps, base + 2)!;
+	self.patch(finished)!;
+	if (dest != DISCARD) self.emit_abc(MOVE, dest, base + 2);
+	self.release(saved);
+}
+
 // ---- statements ----
 
 fn JumpCtx* Codegen.push_jump(&self, JumpKind kind)
@@ -1478,6 +1556,7 @@ fn void? Codegen.return_out(&self, JumpCtx* from, uint reg)
 {
 	for (JumpCtx* c = from; c; c = c.outer)
 	{
+		if (c.closes_iterator) self.emit_abc(ITERCLOSE, c.iter_reg);
 		if (c.kind != FINALLY) continue;
 		if (reg != c.cval) self.emit_abc(MOVE, c.cval, reg);
 		self.emit((uint)rt::encode_asbx(LOADI, c.ctype, 2));
@@ -1695,10 +1774,20 @@ fn void? Codegen.stmt_for_of(&self, Node* n)
 		self.assign_pattern(n.a, base + 2, false)!;
 	}
 	JumpCtx* loop = self.push_jump(LOOP);
+	loop.closes_iterator = n.kind == FOR_OF;
+	loop.iter_reg = base;
 	self.stmt(n.d)!;
 	self.fs.jumps = loop.outer;
 	self.patch_all(&loop.continues, top)!;
 	self.jump_back(JMP, 0, top)!;
+	if (loop.closes_iterator && loop.breaks.len())
+	{
+		// A break closes the iterator; running out of values doesn't.
+		self.patch_all(&loop.breaks, self.pc())!;
+		self.emit_abc(ITERCLOSE, base);
+		self.patch(exit)!;
+		return;
+	}
 	self.patch(exit)!;
 	self.patch_all(&loop.breaks, self.pc())!;
 }

@@ -52,6 +52,8 @@ struct Frame
 	bool construct;
 	// execute() returns when this frame does; set on frames entered from native code.
 	bool stop;
+	// A generator or async call: where the frame is saved when it suspends.
+	JsCoroutine* coroutine;
 }
 
 enum ErrorKind : char
@@ -92,6 +94,8 @@ struct Atoms
 	Value symbol_str;
 	Value return_str;
 	Value last_index;
+	Value then;
+	Value throw_str;
 }
 
 <*
@@ -129,6 +133,14 @@ struct Vm
 	JsObject* array_buffer_proto;
 	JsObject* regexp_proto;
 	JsObject*[TypedKind::len] typed_protos;
+	JsObject* generator_proto;
+	JsObject* promise_proto;
+	// Promise jobs, oldest first from job_head; the running one is kept in current_job.
+	List {Job} jobs;
+	sz job_head;
+	Job current_job;
+	// Rejected promises nobody has subscribed to yet.
+	List {Value} unhandled;
 	Value sym_iterator;
 	Value sym_async_iterator;
 	ulong random_state;
@@ -174,6 +186,8 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.roots.init(mem);
 	self.owned_names.init(mem);
 	self.regex_cache.init(mem);
+	self.jobs.init(mem);
+	self.unhandled.init(mem);
 	self.gc_threshold = GC_MIN_THRESHOLD;
 	self.init_atoms()!;
 	self.init_builtins()!;
@@ -199,6 +213,8 @@ fn void Vm.free(&self)
 		free(e.re);
 	}
 	self.regex_cache.free();
+	self.jobs.free();
+	self.unhandled.free();
 	self.slots.free();
 	self.slot_names.free();
 	self.slot_const.free();
@@ -236,6 +252,8 @@ fn void? Vm.init_atoms(&self)
 	a.symbol_str = self.atom_value("symbol")!;
 	a.return_str = self.atom_value("return")!;
 	a.last_index = self.atom_value("lastIndex")!;
+	a.then = self.atom_value("then")!;
+	a.throw_str = self.atom_value("throw")!;
 }
 
 <*
@@ -423,8 +441,9 @@ fn Value? Vm.call(&self, Value callee, Value this_value, Value[] args)
 	JsFunction* fun = (JsFunction*)callee.as_object();
 	if (fun.native)
 	{
-		self.native_depth++;
-		defer self.native_depth--;
+		uint depth = fun.native == &native_generator_resume ? 0 : 1;
+		self.native_depth += depth;
+		defer self.native_depth -= depth;
 		return fun.native(self, this_value, args, fun);
 	}
 	if (fun.proto.is_class_constructor) return self.throw_error(TYPE_ERROR, "Class constructor %s cannot be invoked without 'new'", fun.proto.name)~;

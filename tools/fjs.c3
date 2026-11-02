@@ -49,16 +49,38 @@ fn int main(String[] args)
 		}
 		if (catch vm.run_script(script))
 		{
-			@pool()
+			report(&vm, "Uncaught ", vm.exception);
+			return 1;
+		}
+		// Then the microtasks, as node runs them after the script.
+		while (true)
+		{
+			bool? more = vm.run_job();
+			if (catch more)
 			{
-				DString out;
-				out.tinit();
-				out.append("Uncaught ");
-				if (catch vm.inspect(vm.exception, &out, 0, false)) out.append("<exception while printing the exception>");
-				io::eprintn(out.str_view());
-			};
+				report(&vm, "Uncaught ", vm.exception);
+				return 1;
+			}
+			if (!more) break;
+		}
+		Value reason;
+		if (vm.take_unhandled(&reason))
+		{
+			report(&vm, "Uncaught (in promise) ", reason);
 			return 1;
 		}
 	}
 	return 0;
+}
+
+fn void report(Vm* vm, String prefix, Value error)
+{
+	@pool()
+	{
+		DString out;
+		out.tinit();
+		out.append(prefix);
+		if (catch vm.inspect(error, &out, 0, false)) out.append("<exception while printing the exception>");
+		io::eprintn(out.str_view());
+	};
 }
