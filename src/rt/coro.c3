@@ -35,6 +35,11 @@ struct JsCoroutine
 	uint pc;
 	CoroState state;
 	bool is_async;
+	// An async generator (see asyncgen.c3): its requests, and whether it waits in an await.
+	bool async_gen;
+	bool awaiting;
+	Value queue;
+	uint queue_head;
 	// Async functions: the promise the call returned.
 	Value promise;
 }
@@ -47,10 +52,11 @@ struct JsCoroutine
 fn JsCoroutine*? Vm.new_coroutine(&self, Frame* f, bool is_async)
 {
 	JsObject* proto = self.object_proto;
+	bool async_gen = f.proto.is_async && f.proto.is_generator;
 	if (!is_async)
 	{
 		Value own = self.get(object_value(f.function), self.atoms.prototype)!;
-		proto = own.is_object() ? own.as_object() : self.generator_proto;
+		proto = own.is_object() ? own.as_object() : async_gen ? self.async_generator_proto : self.generator_proto;
 	}
 	JsCoroutine* c = (JsCoroutine*)self.heap.new_object(proto, COROUTINE, JsCoroutine::size) ?? self.oom()~!;
 	c.function = f.function;
@@ -58,7 +64,9 @@ fn JsCoroutine*? Vm.new_coroutine(&self, Frame* f, bool is_async)
 	c.regs = mem::new_array(Value, c.nregs).ptr;
 	account((sz)c.nregs * Value::size);
 	c.promise = UNDEFINED;
+	c.queue = UNDEFINED;
 	c.is_async = is_async;
+	c.async_gen = async_gen;
 	return c;
 }
 
@@ -442,7 +450,13 @@ fn bool? Vm.run_job(&self)
 		case REACTION:
 			if (job.target.is_object() && job.target.as_object().kind == COROUTINE)
 			{
-				(void)self.resume((JsCoroutine*)job.target.as_object(), job.argument, job.rejected ? THROW : NEXT)!;
+				JsCoroutine* c = (JsCoroutine*)job.target.as_object();
+				if (c.async_gen)
+				{
+					self.async_gen_continue(c, job.argument, job.rejected)!;
+					return true;
+				}
+				(void)self.resume(c, job.argument, job.rejected ? THROW : NEXT)!;
 				return true;
 			}
 			Value result = job.argument;
@@ -791,6 +805,8 @@ fn void? Vm.init_coroutines(&self)
 	}
 	JsFunction* self_iter = self.new_native("[Symbol.iterator]", &native_return_this, 0)!;
 	self.generator_proto.add(h, self.sym_iterator, object_value(self_iter), METHOD_PROP)!;
+
+	self.init_async_generators()!;
 
 	self.promise_proto = h.new_object(self.object_proto)!;
 	JsFunction* ctor = self.define_constructor("Promise", &native_promise, 1, self.promise_proto)!;

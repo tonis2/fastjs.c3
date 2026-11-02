@@ -260,9 +260,9 @@ fn Value? Vm.function_special(&self, JsFunction* f, Value key)
 	}
 	if (key == self.atoms.length) return integer(f.native ? (int)f.native_arity : (int)f.proto.length);
 	// A generator function's prototype is what its generator objects inherit from.
-	if (key == self.atoms.prototype && !f.native && f.proto.is_generator && !f.proto.is_async)
+	if (key == self.atoms.prototype && !f.native && f.proto.is_generator)
 	{
-		JsObject* proto = self.heap.new_object(self.generator_proto) ?? self.oom()~!;
+		JsObject* proto = self.heap.new_object(f.proto.is_async ? self.async_generator_proto : self.generator_proto) ?? self.oom()~!;
 		f.add(&self.heap, self.atoms.prototype, object_value(proto), { .writable = true }) ?? self.oom()~!;
 		return object_value(proto);
 	}

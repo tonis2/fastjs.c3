@@ -366,7 +366,13 @@ fn Node*? Parser.parse_for(&self)
 {
 	Token t = self.tok;
 	self.advance()!;
-	if (self.at_word("await")) return self.fail("'for await' is not supported")~;
+	bool is_await = false;
+	if (self.at_word("await"))
+	{
+		if (!self.in_async && !(self.is_module && !self.in_function)) return self.fail("'for await' is only valid in async functions and at the top level of modules")~;
+		is_await = true;
+		self.advance()!;
+	}
 	self.expect(LPAREN)!;
 	Node* init = null;
 	switch
@@ -383,9 +389,11 @@ fn Node*? Parser.parse_for(&self)
 	if (init && (self.at_word("of") || self.tok.kind == KW_IN))
 	{
 		bool of = self.tok.kind == IDENT;
+		if (is_await && !of) return self.fail("'for await' needs 'of'")~;
 		Token op = self.tok;
 		self.advance()!;
 		Node* n = self.node(of ? FOR_OF : FOR_IN, &t);
+		n.flags.is_async = is_await;
 		if (init.kind == VAR_DECL)
 		{
 			if (init.list.len != 1 || init.list[0].b) return self.fail_at(&op, "a for-of or for-in head declares one variable, without an initializer")~;

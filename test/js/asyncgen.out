@@ -1,0 +1,25 @@
+v 0
+v 1
+v 2
+counter finally
+sent hi
+{"value":0,"done":false} {"value":1,"done":false}
+counter finally
+{"value":2,"done":false} {"value":3,"done":false} {"value":"early","done":true} {"done":true}
+counter finally
+caught stop
+counter finally
+sync 1
+sync 2
+sync 3
+custom 0
+custom 1
+custom return
+boom 1
+gen threw
+rejected in
+AsyncGeneratorFunction object true
+x 1
+{"value":"a","done":false}
+a,b,c
+done

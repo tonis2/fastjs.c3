@@ -611,9 +611,9 @@ fn FunctionProto*? Codegen.compile_function(&self, Node* node, String name)
 		self.emit_abc(RETUNDEF, 0);
 		return self.end_function(&fs, node, name, 0, false);
 	}
-	if (node.flags.is_async && node.flags.generator) return self.unsupported(node, "async generators")~;
-	// An async call makes its promise first, so even a failing parameter default rejects it.
-	if (node.flags.is_async) self.emit_abc(ASYNCSTART, 0);
+	// An async call makes its promise first, so even a failing parameter default rejects it. An
+	// async generator is a generator (GENSTART below) whose next() makes the promises.
+	if (node.flags.is_async && !node.flags.generator) self.emit_abc(ASYNCSTART, 0);
 	if (info.self_binding)
 	{
 		Binding* b = info.self_binding;
@@ -1782,6 +1782,8 @@ fn void? Codegen.yield_expr(&self, Node* e, uint dest)
 		self.emit_abc(LOADUNDEF, v);
 	}
 	self.fs.line = e.line;
+	// An async generator yields what its operand resolves to.
+	if (self.in_async_generator()) self.emit_abc(AWAIT, v);
 	self.emit_abc(YIELD, v, mode, 0);
 	uint resumed = self.emit_jump(JMPF, mode)!;
 	self.return_out(self.fs.jumps, v)!;
@@ -1794,8 +1796,11 @@ fn void? Codegen.yield_expr(&self, Node* e, uint dest)
  `yield* iterable`: forward next/throw/return to an inner iterator until it is done. The four
  registers are [iterator, next, value, mode], as YSTEP expects.
 *>
+fn bool Codegen.in_async_generator(&self) @inline => self.fs.info.node.flags.is_async && self.fs.info.node.flags.generator;
+
 fn void? Codegen.yield_star(&self, Node* e, uint dest)
 {
+	if (self.in_async_generator()) return self.unsupported(e, "'yield*' in async generators")~;
 	uint saved = self.fs.free_reg;
 	uint base = self.alloc(4)!;
 	self.expr(e.a, base + 2)!;
@@ -2062,8 +2067,71 @@ fn void? Codegen.stmt_for(&self, Node* n)
 	self.patch_all(&loop.breaks, self.pc())!;
 }
 
+<*
+ `for await (x of src)`: call next(), await the result, stop when it is done. A sync iterable
+ is stepped through a wrapper that awaits each value (async_iterator_of).
+*>
+fn void? Codegen.stmt_for_await(&self, Node* n)
+{
+	Scope* scope = n.sema;
+	foreach (b : scope.bindings) self.alloc_storage(b)!;
+	foreach (b : scope.bindings) self.init_storage(b)!;
+	// base: the iterator, base + 1: its next, base + 2 and up: the call, then value and done.
+	uint base = self.alloc(3)!;
+	uint src = self.expr_any(n.b)!;
+	self.fs.line = n.line;
+	self.name_site(n.b);
+	self.emit_abc(GETASYNCITER, base, src);
+	self.release(base + 2);
+	uint call = self.alloc(2)!;
+	uint top = self.pc();
+	self.emit_abc(MOVE, call, base + 1);
+	self.emit_abc(MOVE, call + 1, base);
+	self.emit_abc(CALL, call, 0);
+	self.emit_abc(AWAIT, call);
+	self.emit_abc(ITERRESULT, call);
+	uint exit = self.emit_jump(JMPT, call + 1)!;
+	if (n.a.kind == VAR_DECL)
+	{
+		foreach (b : scope.bindings)
+		{
+			if (b.captured) self.init_storage(b)!;
+		}
+		self.assign_pattern(n.a.list[0].a, call, true)!;
+	}
+	else
+	{
+		self.assign_pattern(n.a, call, false)!;
+	}
+	JumpCtx* loop = self.push_jump(LOOP);
+	loop.closes_iterator = true;
+	loop.iter_reg = base;
+	self.stmt(n.d)!;
+	uint body_end = self.pc();
+	self.fs.jumps = loop.outer;
+	self.patch_all(&loop.continues, top)!;
+	self.jump_back(JMP, 0, top)!;
+	if (loop.breaks.len())
+	{
+		self.patch_all(&loop.breaks, self.pc())!;
+		self.emit_abc(ITERCLOSE, base);
+		self.patch(exit)!;
+	}
+	else
+	{
+		self.patch(exit)!;
+	}
+	// A throw from the binding or the body closes the iterator too (see stmt_for_of).
+	uint over = self.emit_jump(JMP)!;
+	self.fs.handlers.push({ .start = exit + 1, .end = body_end, .handler = self.pc(), .reg = call });
+	self.emit_abc(ITERCLOSE, base, 0, 1);
+	self.emit_abc(THROW, call);
+	self.patch(over)!;
+}
+
 fn void? Codegen.stmt_for_of(&self, Node* n)
 {
+	if (n.flags.is_async) return self.stmt_for_await(n);
 	Scope* scope = n.sema;
 	foreach (b : scope.bindings) self.alloc_storage(b)!;
 	foreach (b : scope.bindings) self.init_storage(b)!;

@@ -107,6 +107,8 @@ enum Op : char
 	GETSUPERELEM,   // AB   r[a] = super[r[b]], with `this` as the receiver
 	SETSUPERELEM,   // AB   super[r[a]] = r[b], with `this` as the receiver
 	INITPROTO,      // AB   `__proto__: r[b]` in an object literal: r[a]'s prototype, when r[b] is an object or null
+	GETASYNCITER,   // AB   r[a], r[a+1] = the async iterator `for await` steps over r[b], and its next
+	ITERRESULT,     // A    r[a] = r[a].value, r[a+1] = r[a].done, as booleans
 
 	GETITER,        // ABC  iterate r[b]: r[a] = iterator state, r[a+1] = step state; c = 1 always makes a real iterator
 	FORNEXT,        // AsBx r[a+2] = next value, or jump when done

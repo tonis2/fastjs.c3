@@ -134,7 +134,7 @@ fn JsCoroutine* Vm.inline_generator(&self, Value* state) @inline
 	JsFunction* next = (JsFunction*)state[1].as_object();
 	if (next.native != &native_generator_resume || next.magic != 0) return null;
 	JsCoroutine* c = (JsCoroutine*)state[0].as_object();
-	if (c.is_async || c.state == RUNNING) return null;
+	if (c.is_async || c.async_gen || c.state == RUNNING) return null;
 	return c;
 }
 
@@ -1189,6 +1189,10 @@ fn Value? Vm.run(&self)
 				if (!home) return self.throw_error(SYNTAX_ERROR, "'super' keyword unexpected here")~;
 				if (r[0] == UNINITIALIZED) return self.no_super_error()~;
 				r[a] = self.get_from(home.proto(), k[ins_bx(ins)], r[0])!;
+			case GETASYNCITER:
+				self.async_iterator_of(r[ins_b(ins)], r + a)!;
+			case ITERRESULT:
+				self.unpack_iter_result(r + a)!;
 			case INITPROTO:
 				Value proto = r[ins_b(ins)];
 				if (proto.is_object())

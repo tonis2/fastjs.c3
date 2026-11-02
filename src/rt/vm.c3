@@ -167,6 +167,8 @@ struct Vm
 	Value sym_species;
 	// The Promise constructor, which derived promises of plain ones are made with.
 	Value promise_ctor;
+	JsObject* async_generator_proto;
+	JsObject* async_generator_function_proto;
 	ulong random_state;
 	Clock start_clock;
 	// Heap-allocated names of natives created at runtime (bound functions, getters).
@@ -478,6 +480,7 @@ fn bool Value.is_function(self) => self.is_object() && self.as_object().kind == 
 *>
 fn JsObject* Vm.function_proto_for(&self, FunctionProto* p) @inline
 {
+	if (p.is_async && p.is_generator) return self.async_generator_function_proto;
 	if (p.is_async) return self.async_function_proto;
 	if (p.is_generator) return self.generator_function_proto;
 	return self.function_proto;

@@ -226,6 +226,8 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 		mark_ptr(stack, f.coroutine);
 	}
 	mark_ptr(stack, self.generator_proto);
+	mark_ptr(stack, self.async_generator_proto);
+	mark_ptr(stack, self.async_generator_function_proto);
 	mark_ptr(stack, self.async_function_proto);
 	mark_ptr(stack, self.generator_function_proto);
 	mark_ptr(stack, self.data_view_proto);
@@ -340,6 +342,7 @@ fn void trace(MarkStack* stack, GcHeader* h)
 					JsCoroutine* c = (JsCoroutine*)o;
 					mark_ptr(stack, c.function);
 					mark_value(stack, c.promise);
+					mark_value(stack, c.queue);
 					for (uint i = 0; i < c.nregs; i++) mark_value(stack, c.regs[i]);
 				case PROMISE:
 					JsPromise* p = (JsPromise*)o;
