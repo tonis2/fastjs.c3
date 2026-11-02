@@ -38,7 +38,8 @@ fn void Vm.maybe_gc(&self) @inline
 		self.sweep_step(min(self.heap.sweep_credit * 2, SWEEP_SLICE));
 		self.heap.sweep_credit = 0;
 	}
-	if (self.heap.bytes >= self.gc_threshold && self.native_depth == 0) self.collect();
+	self.heap.take_growth();
+	if (self.heap.bytes - self.heap.dead_pending >= self.heap.threshold && self.native_depth == 0) self.collect();
 }
 
 fn void Vm.mark_roots(&self, MarkStack* stack)
@@ -198,6 +199,8 @@ fn void Vm.collect(&self)
 {
 	Clock started = clock::now();
 	self.finish_sweep();
+	self.heap.take_growth();
+	self.heap.poison = self.gc_stress;
 	MarkStack stack;
 	stack.init(mem, 256);
 	defer stack.free();
@@ -205,7 +208,7 @@ fn void Vm.collect(&self)
 	usz live = 0;
 	while (try h = stack.pop())
 	{
-		live += h.size;
+		live += h.size + extra_size(h);
 		trace(&stack, h);
 	}
 	long marked_ns = (long)started.to_now();
@@ -246,6 +249,7 @@ fn void Vm.collect(&self)
 	self.heap.unswept = self.heap.all;
 	self.heap.all = null;
 	self.heap.sweep_link = &self.heap.unswept;
+	self.heap.dead_pending = self.heap.bytes > live ? self.heap.bytes - live : 0;
 	if (self.gc_stress)
 	{
 		self.finish_sweep();
@@ -257,64 +261,41 @@ fn void Vm.collect(&self)
 	self.gc_mark_ns += marked_ns;
 	self.gc_sweep_ns += total_ns - marked_ns;
 	if (total_ns > self.gc_max_ns) self.gc_max_ns = total_ns;
-	self.gc_threshold = self.gc_stress ? 0 : max(live * 2, self.gc_min_threshold);
-	if (self.gc_trace) io::eprintfn("fastjs gc #%d: %.3f ms (mark %.3f), live %d KiB, next at %d KiB, %d host roots", self.gc_count, total_ns / 1e6, marked_ns / 1e6, live / 1024, self.gc_threshold / 1024, self.roots.len());
-}
-
-fn void Vm.release_block(&self, GcHeader* h)
-{
-	self.heap.bytes -= h.size;
-	if (h.kind == OBJECT && ((JsObject*)h).kind == ARRAY_BUFFER && !((JsArrayBuffer*)h).external) self.heap.bytes -= ((JsArrayBuffer*)h).byte_length;
-	finalize(h);
-	// Under stress, poison dead blocks so a use after free crashes where it happens.
-	if (self.gc_stress) mem::set(h, 0xEE, h.size);
-	free(h);
-	self.gc_freed++;
+	self.heap.threshold = self.next_threshold(live);
+	self.heap.live = live;
+	self.heap.at_limit = self.heap.limit && live >= self.heap.limit;
+	if (self.gc_trace) io::eprintfn("fastjs gc #%d: %.3f ms (mark %.3f), live %d KiB, next at %d KiB, %d host roots", self.gc_count, total_ns / 1e6, marked_ns / 1e6, live / 1024, self.heap.threshold / 1024, self.roots.len());
 }
 
 <*
- Sweep up to `budget` blocks of the last collection. Returns whether the sweep is done.
+ Where the next collection starts: at twice the live size, but with a memory limit, early enough
+ that collecting at a safe point comes before the limit does.
 *>
-fn bool Vm.sweep_step(&self, uint budget = SWEEP_SLICE)
+fn usz Vm.next_threshold(&self, usz live)
 {
-	GcHeader** link = self.heap.sweep_link;
-	if (!link) return true;
-	while (budget-- > 0)
-	{
-		GcHeader* h = *link;
-		if (!h)
-		{
-			// Done: the survivors go back in front of everything allocated since.
-			*link = self.heap.all;
-			self.heap.all = self.heap.unswept;
-			self.heap.unswept = null;
-			self.heap.sweep_link = null;
-			return true;
-		}
-		// Atoms are permanent until the atom table becomes weak.
-		if (h.marked || (h.kind == STRING && ((JsString*)h).atom))
-		{
-			h.marked = false;
-			link = &h.next;
-			continue;
-		}
-		*link = h.next;
-		self.release_block(h);
-	}
-	self.heap.sweep_link = link;
-	return false;
+	if (self.gc_stress) return 0;
+	usz next = max(live * 2, self.gc_min_threshold);
+	usz limit = self.heap.limit;
+	if (!limit) return next;
+	usz room = limit > live ? limit - live : 0;
+	return min(next, live + max(room / 2, limit / 16));
 }
 
-fn void Vm.finish_sweep(&self)
-{
-	while (!self.sweep_step(uint::max)) {}
-}
+fn void Vm.release_block(&self, GcHeader* h) @inline => self.heap.release_block(h);
+fn bool Vm.sweep_step(&self, uint budget = SWEEP_SLICE) @inline => self.heap.sweep_step(budget);
+fn void Vm.finish_sweep(&self) @inline => self.heap.finish_sweep();
 
 <*
  Check heap invariants; used under --gc-stress to catch corruption close to its cause.
 *>
 fn void Vm.verify_heap(&self)
 {
+	// Every byte the heap counts belongs to a block or to memory a block owns.
+	self.heap.take_growth();
+	usz counted = 0;
+	for (GcHeader* h = self.heap.shapes; h; h = h.next) counted += h.size + extra_size(h);
+	for (GcHeader* h = self.heap.all; h; h = h.next) counted += h.size + extra_size(h);
+	assert(counted == self.heap.bytes, "heap counts %d bytes but blocks own %d", self.heap.bytes, counted);
 	for (GcHeader* h = self.heap.shapes; h; h = h.next) assert(!h.marked, "mark bit left set on a shape");
 	for (GcHeader* h = self.heap.all; h; h = h.next)
 	{

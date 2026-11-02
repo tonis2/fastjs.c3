@@ -222,3 +222,25 @@ fn void test_modules() @test
 	defer free(refused);
 	assert(refused.contains("cannot import"), "got %s", refused);
 }
+
+fn void test_memory_limit() @test
+{
+	Context js = qjs::open(4 * 1024 * 1024)!!;
+	defer js.close();
+	// Several times the limit in garbage: collections must come before the limit does.
+	Value ok = js.eval("let keep = null; for (let i = 0; i < 60000; i++) keep = { a: [i, i + 1, i + 2], s: 'x' + i, m: new Map([[i, i]]) }; keep.a[2]")!!;
+	test::eq(js.number(ok), 60001.0);
+	// Keeping everything does run out, as a catchable RangeError.
+	Value caught = js.eval("(() => { const big = []; try { for (;;) big.push({ s: 'y' + big.length, xs: [1, 2, 3] }); } catch (e) { const n = big.length; big.length = 0; return e.name + ': ' + e.message + ' ' + (n > 1000); } })()")!!;
+	defer js.release(caught);
+	String text = js.text(caught);
+	defer free(text);
+	test::eq(text, "RangeError: Out of memory true");
+	// And the engine still works afterwards.
+	Value again = js.eval("let n = 0; for (let i = 0; i < 20000; i++) n += [i].length; n")!!;
+	test::eq(js.number(again), 20000.0);
+	if (try js.eval("new ArrayBuffer(64 * 1024 * 1024)")) assert(false, "should not fit");
+	String message = js.exception();
+	defer free(message);
+	assert(message.starts_with("RangeError"), "got %s", message);
+}

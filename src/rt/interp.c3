@@ -414,6 +414,8 @@ fn Value? Vm.run(&self)
 				}
 				else
 				{
+					// String concatenation allocates; both operands are safe in registers.
+					self.maybe_gc();
 					r[a] = self.add(b, c)!;
 				}
 			case SUB:

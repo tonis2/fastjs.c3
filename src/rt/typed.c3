@@ -106,6 +106,11 @@ fn void JsTypedArray.set_int(&self, uint i, int v) @inline
 fn JsArrayBuffer*? Vm.new_buffer(&self, usz n)
 {
 	if (n > 1u << 31) return self.throw_error(RANGE_ERROR, "Array buffer allocation failed")~;
+	if (usz limit = self.heap.limit)
+	{
+		self.heap.take_growth();
+		if (self.heap.bytes + n > limit && @catch(self.heap.make_room(n))) return self.throw_error(RANGE_ERROR, "Array buffer allocation failed")~;
+	}
 	JsArrayBuffer* b = (JsArrayBuffer*)self.heap.new_object(self.array_buffer_proto, ARRAY_BUFFER, JsArrayBuffer::size) ?? self.oom()~!;
 	b.data = n ? (char*)mem::calloc((sz)n) : null;
 	b.byte_length = n;

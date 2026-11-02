@@ -153,6 +153,7 @@ fn void Shape.build_table(&self)
 	uint cap = 16;
 	while (cap < self.count * 2) cap *= 2;
 	self.table = mem::new_array(Shape*, cap).ptr;
+	account((sz)(cap - self.table_cap) * Shape*::size);
 	self.table_cap = cap;
 	for (Shape* s = self; s.parent; s = s.parent)
 	{
@@ -233,6 +234,7 @@ fn void JsObject.ensure_slots(&self, uint needed)
 	uint cap = self.slot_cap ? self.slot_cap * 2 : 4;
 	while (cap < needed) cap *= 2;
 	self.slots = (Value*)mem::realloc(self.slots, (sz)cap * Value::size);
+	account((sz)(cap - self.slot_cap) * Value::size);
 	self.slot_cap = cap;
 }
 
@@ -314,6 +316,7 @@ fn void JsArray.reserve(&self, uint capacity)
 	uint cap = self.cap ? self.cap * 2 : 4;
 	while (cap < capacity) cap *= 2;
 	self.elements = (Value*)mem::realloc(self.elements, (sz)cap * Value::size);
+	account((sz)(cap - self.cap) * Value::size);
 	self.cap = cap;
 }
 
@@ -352,6 +355,41 @@ fn void JsArray.set_length(&self, uint length)
 		for (uint k = self.length; k < length; k++) self.elements[k] = EMPTY;
 	}
 	self.length = length;
+}
+
+<*
+ Bytes a block owns outside itself, as counted by `account` while it grew.
+*>
+fn usz extra_size(GcHeader* h)
+{
+	switch (h.kind)
+	{
+		case OBJECT:
+			JsObject* o = (JsObject*)h;
+			usz n = (usz)o.slot_cap * Value::size;
+			switch (o.kind)
+			{
+				case ARRAY:
+					n += (usz)((JsArray*)o).cap * Value::size;
+				case MAP:
+					JsMap* m = (JsMap*)o;
+					n += (usz)m.cap * MapEntry::size + (usz)m.index_cap * uint::size;
+				case ARRAY_BUFFER:
+					JsArrayBuffer* b = (JsArrayBuffer*)o;
+					if (!b.external) n += b.byte_length;
+				case COROUTINE:
+					JsCoroutine* c = (JsCoroutine*)o;
+					if (c.regs) n += (usz)c.nregs * Value::size;
+				default:
+					break;
+			}
+			return n;
+		case SHAPE:
+			Shape* s = (Shape*)h;
+			return s.table ? (usz)s.table_cap * Shape*::size : 0;
+		default:
+			return 0;
+	}
 }
 
 <*

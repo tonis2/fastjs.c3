@@ -660,6 +660,329 @@ the scanned range when the callee returned. The GC then set mark bits in freed m
   - **memory limit:** an allocation that hits `Heap.limit` fails instead of collecting first.
     three.c3 sets a limit, so this matters for big scenes.
 
+### Phases 10–16: the plan after three.c3 runs (2026-11-02)
+Agreed with the user:
+- full three.c3 migration to the new API, on a local `fastjs` branch in three.c3 (never main,
+  never pushed)
+- Date: the practical subset
+- Unicode: full case mapping plus regex `\p{…}`, from generated tables
+- incremental marking: build it regardless
+
+### Milestone 10 — Memory limit that collects first (done)
+- [x] Done 2026-11-02. What was built:
+  - `Heap.bytes` counts everything the engine owns: blocks plus `extra_size(h)` (slots, elements,
+    Map tables, shape tables, coroutine registers, buffer data). Growth sites call `account()`,
+    which feeds a thread-local counter folded in at the next allocation or safe point.
+    `verify_heap` (under `--gc-stress`) asserts the count matches the blocks exactly.
+  - Sweeping lives on `Heap` now (`sweep_step`, `finish_sweep`, `release_block`), so an
+    allocation can finish the sweep itself.
+  - `Heap.dead_pending` keeps unswept garbage from counting toward the next collection.
+  - `next_threshold` keeps the next collection before the limit.
+  - **At the limit**, `Heap.make_room`:
+    - finishes the sweep
+    - allows running over by `limit/8` and asks for a collection at the next safe point
+    - after a collection that found the heap full, asks again only after `limit/16` more
+      allocation (otherwise it collected at every allocation: 5000 collections, 8 s)
+    - past the headroom, fails, and still asks for a collection so a `catch` can recover
+  - `Vm.oom()` lets the RangeError itself past the limit.
+  - String ADD is a safe point.
+  - `FASTJS_LIMIT_MB=n` sets a limit in `fjs`.
+- Original plan:
+
+Facts:
+- `Heap.alloc` (`src/rt/heap.c3:67`) fails at the limit and never collects.
+- `alloc` can't collect safely, because C locals aren't rooted (`gc.c3:4-7`).
+- `gc_threshold` (4 MiB minimum, `gc.c3:9`) has no relation to `limit`.
+- Off-heap `realloc` memory isn't counted: slots, array elements, Map entries, captures, coroutine
+  regs, shape tables, reactions.
+
+Changes:
+1. **Count all engine memory.**
+   - Add `Heap.account(isz delta)`.
+   - Route every `mem::realloc`/`free` of engine-owned buffers through it. Find them with
+     `grep -n "realloc\|mem::free\|free(" src/rt`; the main sites are `object.c3:155,235,316` and
+     `collections.c3:~107`.
+   - `new_buffer` (`typed.c3:105`) must check the limit too.
+2. **Cap the threshold:** `gc_threshold = min(max(live*2, gc_min), limit - limit/8)` (`gc.c3:260`).
+   Safe-point collection then happens before the limit.
+3. **When an allocation hits the limit:**
+   - (a) **Finish the lazy sweep right there.** This is safe: `unswept` only holds blocks from the
+     last mark, and dead ones can't have become reachable. That needs `sweep_step`/`release_block`
+     callable from `Heap`: move them there, or give `Heap` a back pointer to `Vm`.
+   - (b) If memory is still over the limit, allow a headroom of `limit/8` and set
+     `heap.gc_urgent`, so `maybe_gc` collects at the next safe point whatever the threshold.
+   - (c) Past the headroom, fail as today with RangeError "Out of memory".
+4. Add `maybe_gc` to the ADD string path's safe point. The opcode's start is already a safe point.
+
+Known limit, to document: a single native that loops through JS callbacks (`arr.map(f)`) still can't
+collect, because `native_depth > 0`.
+
+Tests:
+- `api_test`: `open(memory_limit = 2 MiB)`, then a loop allocating 50 MiB of garbage in total
+  succeeds; a script that retains 4 MiB throws RangeError.
+- A `test/js` case under `--gc-stress`.
+
+### Milestone 11 — The new embedding API (fastjs side)
+
+All in `src/api/qjs.c3` (module `fastjs::qjs`), plus small VM hooks. Each gets `api_test` coverage.
+
+1. **Typed fast host functions.** This is the main win.
+   ```c3
+   alias NumberFn = fn double(void* opaque, double* args, int argc);
+   alias MethodFn = fn double(void* opaque, void* self_data, double* args, int argc);
+   enum Returns { NUMBER, BOOL, UNDEFINED }
+   fn Value Context.number_function(&self, NumberFn body, ZString name, int arity, void* opaque = null, Returns r = NUMBER);
+   fn void Context.number_method(&self, ClassId cls, ZString name, MethodFn body, int arity, void* opaque = null, Returns r = NUMBER);
+   ```
+   - Add `JsFunction.fast_kind` (none, number, method) and `fast_fn`.
+   - **Dispatch:** in the CALL op (`interp.c3:950`), test `fun.fast_kind` before the generic native
+     path.
+     - Unpack the args into a `double[MAX_FAST_ARGS = 32]` C array: an int converts directly, a
+       double is used as is, and anything else goes through the slow `to_number`.
+     - Missing args are NaN.
+     - For a method, check that `this` is a native object of the class (otherwise TypeError) and
+       pass its data pointer.
+     - Box the result with the existing `number()` helper, so it becomes an int when integral.
+     - The fast path skips the `Value[]` slice, the trampoline, `wrap`, the `out` root and `release`.
+   - **Errors:** `Context.raise` sets `vm.host_raised`, which the fast path checks after the call.
+   - **Target:** a crossing under 20 ns, measured with a new `bench/crossing.c3` (an api_test-style
+     microbenchmark with 10M calls).
+2. **Native classes with opaque data**
+   - `ClassId native_class(name, Finalizer fin = null)`
+   - `Value class_prototype(cls)`
+   - `Value native_object(cls, void* data)`
+   - `void* opaque(Value, cls)`, which returns null on a class mismatch
+   - `set_opaque(Value, void*)`
+   - New ObjectKind `NATIVE` (`JsObject` plus `void* data` and `uint class_id`).
+   - `finalize` calls the finalizer during sweep. It must not touch JS; document that.
+3. **Atoms.**
+   - `typedef Atom = ulong` (an interned string, never collected).
+   - `Atom atom(String)`
+   - `Value get(obj, Atom)`, `double get_number(obj, Atom)`, `bool get_bool(obj, Atom)`
+   - `set(obj, Atom, Value)`, which takes ownership like `set_property`
+   - They go straight to `Vm.get`/`set` with no interning on each call.
+4. **`Value keys(obj)`:** an owned array of own enumerable string keys. Proxies go through
+   `proxy_own_keys`.
+5. **Typed-array views.**
+   - `View? view(Value)` returns `{ ArrayKind kind; void* ptr; usz len; usz byte_len; }` for any
+     typed array, DataView or ArrayBuffer.
+   - It fails on a detached buffer.
+6. **Promise state**
+   - `PromiseState promise_state(v)`: NOT_A_PROMISE, PENDING, FULFILLED or REJECTED.
+   - `Value promise_result(v)`, owned; reading a rejection marks it handled.
+7. **`EVAL_ASYNC`.**
+   - Compiles the script body as an async function, so top-level `await` is allowed in scripts.
+   - It returns a promise of the completion value.
+   - Reuse the module-body path: `Codegen.compile_module` already emits ASYNCSTART.
+8. **Cheaper `host_trampoline`**
+   - Avoid `release(out)` when `out` isn't heap.
+   - Make `wrap()` free; it already is in fastjs, so just confirm it.
+
+### Milestone 12 — V8-style error messages
+
+- **Compile time:** codegen records `FunctionProto.call_names: CallName[] {uint pc; uint name_k}`
+  for CALL, NEW, CALLSPREAD, NEWSPREAD and GETITER, rendering the callee AST the way V8's
+  CallPrinter does:
+  - forms: `ident`, `this`, `a.b.c`, `a[0]`, `a[i]`, `super.x`, `a?.b`, `f(...)`
+  - check each form against node while writing it
+- **Lookup:** only at throw time, by binary search on `pc - 1`. It costs nothing on the fast path.
+- **Sites:**
+  - `interp.c3:944` and `:964`: "o.foo is not a function" / "is not a constructor"
+  - the GETITER "x is not iterable"
+- **Fix `Vm.describe`'s doc comment** (`vm.c3:561`), which promises an `o.x` form it never produces.
+- **Test:** `test/js/errors2.js` diffs the messages against node.
+
+### Milestone 13 — three.c3 full migration (branch `fastjs` in ../three.c3)
+
+Start from `tools/use-in-three.sh`, then:
+1. **Hot verbs become `number_function`.** Covers:
+   - the clock verbs, `setTransform`, `inputDown`, the query and steer batch verbs, and the
+     pointer/clock reads
+   - every number-in/number-out verb in `src/js/bind_*.c3`; there are about 287 `bind()` calls in
+     `bind_scene.c3:42`
+   - `inputDown(String(key))`: the prelude passes an interned key code
+2. **Handles become native objects.**
+   - A `Node` native class whose data is `{scene*, index, generation}`, checked on use.
+   - Node verbs become `number_method`s.
+   - Remove `arg_handle`'s linear scan and `pair_value` arrays (`bind_args.c3:137-251`).
+   - The prelude (`object3d.js` and others) keeps the native object instead of `[i, g]`.
+3. **UI and post use `keys` plus atoms.**
+   - Drop the canonicalising pass in `ui.js:8-40` and the `KIND` integer mapping.
+   - `bind_ui.c3` reads names with pre-made atoms, a table of about 100.
+   - `bind_post.c3` reads uniform objects directly instead of comma-joined strings.
+4. **Typed arrays:** `typed_view` (`bind_query.c3:41-63`) becomes `js.view(args[at])`. The prelude
+   passes the typed array itself, not `buffer, byteOffset, length` (`query.js:463`, …).
+5. **Async**
+   - `await_settled` (`runtime.c3:940-997`) uses `promise_state`/`promise_result`.
+   - The `(async()=>{…})()` wrapping (`runtime.c3:812`) becomes `EVAL_ASYNC`.
+   - `is_thenable` (`frame_loop.c3:771`) uses `promise_state`.
+6. **GC:** after milestone 14, call `js.gc_step(budget)` in the idle part of each frame
+   (`frame_loop.c3`).
+
+Each step is verified before the next:
+- `c3c test` passes 1523/1523
+- all 12 examples give identical screenshots and logs
+- per-frame script time (mean / worst) is compared against the phase 9 table
+
+### Milestone 14 — GC: `gc_step`, free-list allocator, incremental marking
+
+1. **`Context.gc_step(budget_us)`**
+   - Sweeps within the budget.
+   - Collects now if `bytes >= threshold * 3/4`, so collection happens at a frame boundary the
+     host picks.
+   - After step 3 below, it runs mark slices instead.
+2. **Size-class allocator**
+   - Classes from 16 to 512 bytes in 16-byte steps, carved from 64 KiB pages, with a free list per
+     class.
+   - Larger blocks still use `calloc`.
+   - Keep the `GcHeader.next` lists, so mark and sweep don't change.
+   - `release_block` pushes the block onto its class's free list.
+   - Pages count toward `Heap.bytes`.
+   - Measure `gc_sweep_ns` and the alloc-heavy benches before and after.
+3. **Incremental tri-color marking.** Dijkstra insertion barrier, black allocation, and an atomic
+   final remark.
+   - **States:** IDLE → MARKING (slices) → REMARK → SWEEP (the existing lazy sweep).
+   - Marking starts only after `finish_sweep`.
+   - **Barrier:**
+     - `heap.write_barrier(owner, Value v)`:
+       `if (heap.marking && owner.marked && v.is_heap() && !v.header.marked) gray(v)`.
+     - Every heap store must go through helpers (about 150 sites, listed by the exploration):
+       - `JsObject.put_slot` / `add` / `reshape`, with the shape pointer barriered too
+       - `JsArray.put`/`push`, and an `array_moved(arr)` that re-grays after bulk `mem::move`
+         (`lib.c3:517,527,557,624`)
+       - `JsBox.put` (SETCAP, INITCAP, SETBOX, INITBOX)
+       - `JsMap.put`
+       - a `@store(owner, field, v)` macro for function, promise, coroutine, typed array,
+         accessor and iterator fields
+       - inline-cache fast paths (`interp.c3:785,792,884`) and `ops.c3:396,439,635`
+   - **Roots** (VM stack, `vm.slots`, `roots`, jobs, modules, `current_job`) aren't barriered.
+     They are rescanned in REMARK, which also drains the gray stack.
+     `clear_dead_ics` and the shape sweep run after REMARK.
+   - **Pacing:** `maybe_gc` runs mark slices paid for by allocation credit (like `sweep_credit`).
+     `gc_step` runs slices by time.
+   - **Safety net**
+     - Under `--gc-stress`, a `verify_marking` pass runs after REMARK. It does an independent
+       reachability walk using a spare `GcHeader.flags` bit and asserts every reachable block is
+       marked.
+     - A lint script (in `test/js/run.sh`) rejects raw `.slots[..] =`, `.elements[..] =` or
+       box `.value =` stores outside the helpers.
+   - **Target:** no GC pause over 0.5 ms in any three.c3 example (`FASTJS_GC_TRACE`).
+
+### Milestone 15 — Speed
+
+1. **String append buffers** (instead of ropes; data stays contiguous, so nothing needs flattening)
+   - `JsString.data` becomes a pointer, either inline after the header or into a shared `StrBuf`
+     heap block `{ GcHeader; uint cap; uint used; bool wide; char[*] bytes }`.
+   - `trace` marks the buffer.
+   - **Concat** (`string.c3:348`):
+     - If the left string's data ends at `buf.used`, the widths match and capacity allows, append
+       in place.
+     - Else, if the result is at least 64 units, allocate a StrBuf with capacity twice the result.
+     - Else, make a flat inline string.
+   - Raw `.data` is only used inside `string.c3` (9 sites).
+   - New op `CONCATN a, b, n` for template literals: one allocation instead of n−1
+     (`codegen.c3:1083`).
+   - **Target:** `bench/strings.js` at least 1.5× QuickJS.
+2. **Store the pc only where needed.**
+   - Move `f.pc = pc` (`interp.c3:317`) into the ops that can throw or call.
+   - Stack-trace and handler tests must still give the same lines.
+   - Keep the change only if the bench suite gains at least 3%.
+3. **Generators inside the run loop.**
+   - FORNEXT/ITERSTEP on a coroutine whose `next` is `native_generator_resume` pushes the
+     coroutine frame inside `run()`.
+   - YIELD returns to the caller frame, writes the FORNEXT target and continues.
+   - RET marks the generator done and jumps to the loop exit.
+   - Spread and destructuring use the same path.
+   - **Target:** `bench/generators.js` at least 2.5× QuickJS.
+
+### Milestone 16 — Language gaps
+
+Each gets a `test/js/*.js` file regenerated with node (`test/js/regen.sh`).
+
+1. **Close the iterator when a for-of body throws.**
+   - Add a handler covering from just after FORNEXT to the end of the body. A throw from `next()`
+     itself must not close the iterator.
+   - Its body is `ITERCLOSE_QUIET base` (calls `return()` and swallows its errors), then `THROW`.
+   - ITERCLOSE marks the iterator closed *before* calling `return()`, so `return_out`'s closes
+     inside the range can't close it twice.
+2. **`JSON.parse` reviver:** the spec's internalize walk (`lib.c3:1885`). Model it on
+   `json_write`'s holder/key shape.
+3. **Computed class field names:** the resolver makes hidden bindings, evaluated once when the
+   class is defined, which the field initializer reads (`resolve.c3:637`, `codegen.c3:2030`).
+4. **`super`**
+   - New ops: GETSUPERELEM for `super[x]`, plus SETSUPER and SETSUPERELEM for `super.x = v`, all
+     with receiver `this`.
+   - `object_literal` emits SETHOME for methods and accessors (`codegen.c3:1110-1165`).
+   - Misplaced `super` becomes a compile-time error.
+5. **Tagged templates and `String.raw`**
+   - Parse a tag followed by a template.
+   - Each call site gets one frozen strings array, with its own frozen `raw` array, kept in the
+     constant pool.
+   - Invalid escapes give a cooked `undefined`; the lexer must accept them in tagged templates.
+   - A member tag passes its `this`.
+6. **`export * as ns`:** an export entry bound to a box holding the dependency's
+   `module_namespace`, filled at link time.
+7. **Generator prototypes and Promise subclassing**
+   - Each generator function gets its own `.prototype`.
+   - `class P extends Promise` works:
+     - construct with `new.target`'s prototype
+     - `then` and the statics use the constructor (with `Symbol.species`)
+8. **Async generators and `for await`**
+   - An async-generator coroutine with a request queue.
+   - `%AsyncGeneratorPrototype%`'s next, return and throw return promises; `yield` awaits its value.
+   - `for await` compiles to: call next, AWAIT, then test done and value, using the async-from-sync
+     iterator when there's no `Symbol.asyncIterator`. A break awaits `return()`.
+   - `yield*` in async generators comes last.
+9. **Date, practical subset**
+   - Constructors: `new Date()`, `new Date(ms)`, `new Date(ISO or toString string)`,
+     `new Date(y, m, d, …)`, `Date.UTC`, `Date.parse`.
+   - UTC and local getters and setters, local time via libc `localtime_r`/`mktime`.
+   - `toISOString`, `toJSON`, `toString`/`toDateString`/`toTimeString`/`toUTCString` in V8's
+     format, `toLocale*String` as en-US, `valueOf`, and `Symbol.toPrimitive`.
+   - Tests run with `TZ=UTC` and with `TZ=Europe/Tallinn`.
+10. **Unicode**
+    - `tools/gen_unicode.mjs` (node) generates the committed `src/rt/unicode_data.c3`:
+      - full case mapping, including multi-character mappings (ß→SS) and final sigma
+      - simple case folding for regex `/i`
+      - range tables for General_Category with its aliases, Script and Script_Extensions
+        (`sc=`/`scx=`), and common binary properties (Alphabetic, White_Space, Uppercase,
+        Lowercase, ASCII, Any, Assigned, ID_Start, ID_Continue, Emoji…)
+    - The regex engine matches by code point under `/u` (prerequisite for `\p`):
+      - `.`, classes and quantifiers treat a surrogate pair as one character
+      - `\u{…}` escapes work
+      - today `u` only affects `advance_index`, `regexp.c3:1169`
+    - Then `\p{…}`/`\P{…}` inside and outside classes.
+    - Record node's Unicode version in the generated file.
+
+
+### Order and checkpoints
+
+| Order | Milestone | Commit and push fastjs after |
+|---|---|---|
+| 1 | M10: memory limit | yes |
+| 2 | M11: new API | yes |
+| 3 | M12: error messages | yes |
+| 4 | M13: three.c3 migration, on its branch; uses M11 | fastjs fixes only |
+| 5 | M14: GC; then wire `gc_step` into the three.c3 branch | yes |
+| 6 | M15: speed | yes, per item |
+| 7 | M16: language gaps | yes, per 2–3 items |
+
+### Verification
+
+- **fastjs, every milestone**
+  - `c3c build fjs && test/js/run.sh`
+  - `c3c build fjs -O3 --safe=no && test/js/run.sh`
+  - `--gc-stress` runs
+  - `c3c test`, including the new `api_test` cases
+  - `bench/run.sh` against QuickJS, plus `bench/crossing` for M11
+- **three.c3 branch**
+  - `c3c test` passes 1523/1523
+  - the 12 examples run headless with screenshots compared byte for byte to main's QuickJS build:
+    `./build/three --headless --script examples/<x>.js --frames 900 --screenshot out-%03d.png --every 150`
+  - frameStats mean / worst per example is compared with the phase 9 table
+  - GC pauses with `FASTJS_GC_TRACE=1` must stay under 0.5 ms after M14
+- **Language items:** each is diffed against node's output, and Date runs under two time zones.
+
 ### Status of three.c3 scripts (compile only, `fjs --dump`)
 - All 12 examples compile (2026-11-02).
 - The prelude needs ES modules (phase 8).
@@ -778,6 +1101,10 @@ See **Phases** above. Break each one down when it starts.
     `c3c test`: 51 pass.
   - **Next:** the new API (fast host calls first), the memory-limit collection, error
     messages naming the callee ("x.y is not a function").
+
+- 2026-11-02: Phases 10–16 planned with the user (see above). Milestone 10, the memory limit
+  that collects first, is done; `c3c test`: 52 pass.
+  - **Next:** milestone 11, the new embedding API.
 
 **How to run things:**
 ```sh

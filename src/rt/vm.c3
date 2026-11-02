@@ -175,7 +175,6 @@ struct Vm
 	List {Value} roots;
 	// Native functions currently on the C stack; collection waits until there are none.
 	uint native_depth;
-	usz gc_threshold;
 	usz gc_min_threshold;
 	// Asked now and then whether to stop a long-running script (see check_interrupt).
 	InterruptHandler interrupt;
@@ -187,7 +186,6 @@ struct Vm
 	// Collect at every safe point, to flush out rooting bugs.
 	bool gc_stress;
 	usz gc_count;
-	usz gc_freed;
 	// Time spent collecting, for tuning: total, the longest pause, and its parts.
 	long gc_total_ns;
 	long gc_max_ns;
@@ -220,7 +218,7 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.jobs.init(mem);
 	self.unhandled.init(mem);
 	self.modules.init(mem);
-	self.gc_threshold = GC_MIN_THRESHOLD;
+	self.heap.threshold = GC_MIN_THRESHOLD;
 	self.gc_min_threshold = GC_MIN_THRESHOLD;
 	self.gc_trace = @ok(env::tget_var("FASTJS_GC_TRACE"));
 	if (try mb = env::tget_var("FASTJS_GC_MB")) self.gc_min_threshold = (usz)(mb.to_int() ?? 4) * 1024 * 1024;

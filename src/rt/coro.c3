@@ -51,6 +51,7 @@ fn JsCoroutine*? Vm.new_coroutine(&self, Frame* f, bool is_async)
 	c.function = f.function;
 	c.nregs = f.proto.nregs;
 	c.regs = mem::new_array(Value, c.nregs).ptr;
+	account((sz)c.nregs * Value::size);
 	c.promise = UNDEFINED;
 	c.is_async = is_async;
 	return c;
@@ -68,6 +69,7 @@ fn void Vm.save_frame(&self, JsCoroutine* c, Frame* f, uint pc) @inline
 fn void JsCoroutine.finish(&self)
 {
 	self.state = DONE;
+	if (self.regs) account(-(sz)self.nregs * Value::size);
 	free(self.regs);
 	self.regs = null;
 	self.nregs = 0;

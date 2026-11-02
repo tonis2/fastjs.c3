@@ -81,6 +81,7 @@ fn void JsMap.rebuild_index(&self, uint cap)
 {
 	free(self.index);
 	self.index = mem::new_array(uint, cap).ptr;
+	account((sz)(cap - self.index_cap) * uint::size);
 	self.index_cap = cap;
 	for (uint e = 0; e < self.used; e++)
 	{
@@ -104,8 +105,10 @@ fn void JsMap.put(&self, Value key, Value value)
 	}
 	if (self.used == self.cap)
 	{
-		self.cap = self.cap ? self.cap * 2 : 8;
-		self.entries = (MapEntry*)mem::realloc(self.entries, (sz)self.cap * MapEntry::size);
+		uint cap = self.cap ? self.cap * 2 : 8;
+		self.entries = (MapEntry*)mem::realloc(self.entries, (sz)cap * MapEntry::size);
+		account((sz)(cap - self.cap) * MapEntry::size);
+		self.cap = cap;
 	}
 	self.entries[self.used++] = { key, value, hash };
 	self.live++;

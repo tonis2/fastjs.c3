@@ -51,7 +51,7 @@ fn void live_data_survives_collection() @test
 	vm.init()!!;
 	defer vm.free();
 	vm.gc_stress = true;
-	vm.gc_threshold = 0;
+	vm.heap.threshold = 0;
 	@pool()
 	{
 		String out = run(&vm, `

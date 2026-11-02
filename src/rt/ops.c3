@@ -85,6 +85,10 @@ fn JsString*? Vm.to_string(&self, Value v)
 fn fault Vm.oom(&self)
 {
 	self.exception = self.atoms.empty;
+	// The error itself is small; let it past the limit so the script gets a real RangeError.
+	usz limit = self.heap.limit;
+	self.heap.limit = 0;
+	defer self.heap.limit = limit;
 	return self.throw_error(RANGE_ERROR, "Out of memory");
 }
 

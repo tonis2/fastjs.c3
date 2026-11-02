@@ -3,7 +3,7 @@
 // GC torture:     fjs --gc-stress file.js   (collects at every safe point)
 // Modules:       fjs file.mjs, or fjs --module file.js   (imports resolve relative to the importer)
 module fjs;
-import std::io, std::core::dstring, fastjs::rt, fastjs::compile;
+import std::io, std::os::env, std::core::dstring, fastjs::rt, fastjs::compile;
 
 char[] module_buffer;
 
@@ -41,8 +41,10 @@ fn int main(String[] args)
 		io::eprintn("usage: fjs [--dump] [--gc-stress] [--module] <file.js>...");
 		return 2;
 	}
+	usz limit = 0;
+	if (try mb = env::tget_var("FASTJS_LIMIT_MB")) limit = (usz)(mb.to_int() ?? 0) * 1024 * 1024;
 	Vm vm;
-	if (catch vm.init())
+	if (catch vm.init(limit))
 	{
 		io::eprintn("fjs: out of memory");
 		return 1;
@@ -51,7 +53,7 @@ fn int main(String[] args)
 	if (stress)
 	{
 		vm.gc_stress = true;
-		vm.gc_threshold = 0;
+		vm.heap.threshold = 0;
 	}
 	foreach (path : files)
 	{
