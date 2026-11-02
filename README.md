@@ -1,7 +1,6 @@
 # fastjs.c3
 
 A small, fast JavaScript engine written in C3, made for embedding in C3 programs.
-It powers the scripting layer of [three.c3](https://github.com/tonis2/three.c3).
 
 It runs the modern JS that game scripts use (classes with fields, accessors and static
 members, `async`/`await`, generators, Promises, ES modules, destructuring, spread, template
