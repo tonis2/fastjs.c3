@@ -50,12 +50,14 @@ fn Script*? compile_script(Vm* vm, String source, String name, CompileError* err
 
 	Script* script = mem::new(Script);
 	script.name = name.copy(mem);
-	Codegen g = { .vm = vm, .arena = &arena, .source_name = script.name };
+	script.source = source.copy(mem);
+	Codegen g = { .vm = vm, .arena = &arena, .source_name = script.name, .source_text = script.source };
 	FunctionProto*? main = g.compile_program(program);
 	if (catch main)
 	{
 		err.set(g.error, g.error_line, g.error_col);
 		free(script.name);
+		free(script.source);
 		free(script);
 		return COMPILE_ERROR~;
 	}

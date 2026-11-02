@@ -1,0 +1,9 @@
+[ 'three.camera', 'three.camera' ] use CAM here, not mythree.camera or three.cameras; (CAM)
+[ '10', '30' ] aXc false true
+[ '42', '42', index: 7, input: 'price: 42 dollars', groups: undefined ] [ 'b', index: 3, input: 'aaab', groups: undefined ] [x],[y],[z]
+20000
+AsyncFunction AsyncFunction GeneratorFunction Function true false
+Int32Array(3) [ 1, 2, -3 ] Float32Array(2) [ 1, 2 ] Uint8Array(3) [ 0, 2, 4 ] Float64Array(3) [ 1, 2, 3 ] Int16Array(3) [ 1, 2, 3 ]
+() => 1 | function named(a, b = 2) { return a + b; } | m(x) { return x; } | function max() { [native code] } | class K extends Object { constructor() { super(); } static s() {} } | s() {} | async (x) => x * 2
+[null,"() => 1"]
+[ 'a', 'b', 'hidden' ] { value: 1, writable: true, enumerable: true, configurable: true } function { value: 3, writable: false, enumerable: false, configurable: false } [ '0', '1', 'length' ]

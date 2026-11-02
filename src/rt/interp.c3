@@ -172,7 +172,7 @@ fn bool? Vm.is_nan_compare(&self, Value b, Value c)
 *>
 fn Value? Vm.make_closure(&self, Frame* f, FunctionProto* proto)
 {
-	JsFunction* fun = (JsFunction*)self.heap.new_object(self.function_proto, FUNCTION, JsFunction::size) ?? self.oom()~!;
+	JsFunction* fun = (JsFunction*)self.heap.new_object(self.function_proto_for(proto), FUNCTION, JsFunction::size) ?? self.oom()~!;
 	fun.proto = proto;
 	if (proto.captures.len)
 	{

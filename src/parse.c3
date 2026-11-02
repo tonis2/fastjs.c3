@@ -680,6 +680,7 @@ fn void? Parser.parse_function_rest(&self, Node* f)
 	self.in_generator = f.flags.generator;
 	f.list = self.parse_params()!;
 	f.a = self.parse_block()!;
+	f.end = self.prev.end;
 }
 
 fn Node*[]? Parser.parse_params(&self)
@@ -736,6 +737,7 @@ fn Node*? Parser.parse_arrow(&self, Token* start, Node*[] params, bool is_async)
 		f.flags.expression_body = true;
 		f.a = self.parse_assignment()!;
 	}
+	f.end = self.prev.end;
 	return f;
 }
 
@@ -784,6 +786,7 @@ fn Node*? Parser.parse_class(&self, bool declaration)
 	}
 	c.list = self.finish(m);
 	self.advance()!;
+	c.end = self.prev.end;
 	return c;
 }
 
@@ -848,6 +851,8 @@ fn Node*? Parser.parse_method(&self, Node* p)
 {
 	Token at = self.tok;
 	Node* f = self.node(FUNCTION, &at);
+	// A method's source text starts at its name (and modifiers), as in `get x() { ... }`.
+	f.start = p.start;
 	f.flags.is_async = p.flags.is_async;
 	f.flags.generator = p.flags.generator;
 	if (!p.flags.computed) f.name = p.a.name;
@@ -871,6 +876,8 @@ fn Node*? Parser.parse_class_member(&self)
 		{
 			self.advance()!;
 			p.flags.is_static = true;
+			// A static method's source text starts after `static`, as V8 prints it.
+			p.start = self.tok.start;
 		}
 	}
 	self.parse_member_modifiers(p)!;

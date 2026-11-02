@@ -596,6 +596,70 @@ the scanned range when the callee returned. The GC then set mark bits in freed m
   - an incremental GC
   - the memory limit is only what `Heap.init` already enforces
 
+### Phase 9: three.c3 on fastjs (works; not merged into three.c3)
+- [x] `tools/use-in-three.sh [../three.c3]` switches three.c3 to fastjs:
+  - links this repo in as `lib/fastjs.c3l` (via `manifest.json`)
+  - changes `"quickjs"` to `"fastjs"` in its dependencies
+  - changes `import qjs;` to `import fastjs::qjs;` in 19 files
+  - **No other source change**, and no prelude edits after all (see Proxy below).
+- [x] **three.c3's own test suite: 1523/1523 pass on fastjs**, the same as QuickJS. The suite
+      found:
+  - `TypedArray.from/of`
+  - AsyncFunction/GeneratorFunction prototypes: three.c3 refuses async callbacks via
+    `fn.constructor.name`, so the global `Function` was added too
+  - `Function.prototype.toString` source text (`FunctionProto.source` slices the
+    Script/ModuleRecord copy of the source; `Node.end` was added)
+  - regex lookbehind (`LOOKBEHIND`/`LOOKEND_AT`; start positions bounded by `node_width`)
+  - `Object.getOwnPropertyDescriptors`
+  - an allocator mismatch in `Context.exception(tmem)`
+- [x] **All 12 examples:** screenshots byte-identical to the QuickJS build, logs identical
+      except a wall-clock timing. Run at `--frames 120`, comparing `--screenshot` output.
+- [x] **Decision change: Proxy is implemented** (`src/rt/proxy.c3`).
+  - The census missed that three.c3's UI rests on it: "a Widget IS a Proxy", whose set trap
+    is the dirty tracking. Uniform tables and tracked classes use it too.
+  - Traps: get, set, has, deleteProperty, ownKeys, getOwnPropertyDescriptor, defineProperty,
+    getPrototypeOf, apply, construct.
+  - Proxies share a dedicated root shape that no inline cache ever records, and only the slow
+    paths check `is_proxy`. Non-proxy code pays nothing.
+- **Per-frame script time.** Measured by appending a system that averages `three.frame.ms.total`
+  over 600 frames. Both builds use `-O3 --safe=no`, since c3c's default build is debug; always
+  compare that way.
+
+  | example | QuickJS mean / worst ms | fastjs mean / worst ms |
+  |---|---|---|
+  | tank_yard | 0.467 / 1.517 | 0.302 / 0.892 |
+  | wumpa_run | 0.874 / 1.335 | 0.698 / 1.152 |
+  | fireflies | 0.195 / 0.290 | 0.139 / 0.361 |
+  | village | 0.063 / 0.132 | 0.048 / 0.079 |
+  | village_walk | 0.064 / 0.112 | 0.052 / 0.299 |
+  | storage_images | 0.556 / 0.772 | 0.547 / 0.775 |
+  | editor | 0.013 / 0.031 | 0.012 / 0.350 |
+
+  - fastjs is faster on average everywhere, by 1.0–1.5×. The gain is modest because three.c3's
+    frames are dominated by host calls, which the new API is for.
+  - Worst frames are better in the heavy scenes. In light scenes they are a little worse,
+    because a GC mark (~0.3 ms) lands in some frame.
+- [x] **GC work this phase:**
+  - Shapes are on their own list.
+  - The useless child-root pass was removed: a live object traces its `child_root`.
+  - **Lazy sweep paced by allocation**: two blocks are swept per block allocated, in
+    `maybe_gc`. Before, the sweep was 90% of GC time, and sweeping per safe point freed 200k
+    blocks in one frame (8 ms spikes).
+  - Only inline caches pointing at dead shapes are cleared (`clear_dead_ics`), so code stays
+    warm across a collection.
+  - Diagnostics:
+    - `FASTJS_GC_STATS=1` prints totals at exit
+    - `FASTJS_GC_TRACE=1` prints each collection
+    - `FASTJS_GC_MB=n` sets the minimum threshold
+- [ ] Next for three.c3:
+  - make fastjs the default there (the user's call)
+  - the new API: fast typed host calls (the crossing cost dominates now), atoms, opaque native
+    classes, `gc_step`
+  - incremental marking, if the ~0.3–1 ms mark pause matters
+  - a size-class free-list allocator to make sweeping and allocation cheaper
+  - **memory limit:** an allocation that hits `Heap.limit` fails instead of collecting first.
+    three.c3 sets a limit, so this matters for big scenes.
+
 ### Status of three.c3 scripts (compile only, `fjs --dump`)
 - All 12 examples compile (2026-11-02).
 - The prelude needs ES modules (phase 8).
@@ -703,9 +767,23 @@ See **Phases** above. Break each one down when it starts.
     - then the new API, and V8-style "x.y is not a function" messages, which three.c3's agent
       workflow benefits from
 
+- 2026-11-02: Phase 9 integration works.
+  - three.c3 builds on fastjs with an import swap: 1523/1523 of its tests pass, all 12
+    examples give identical screenshots, and script time is lower on every example.
+  - Also this session: Proxy, `toPrecision`/`toExponential`, `copyWithin`, DataView, the GC
+    pacing work, and **a UB fix**. `rt::number` cast out-of-range doubles to int before
+    range-checking, which `-O1`+ miscompiles (1e21 became -2147483648). The test suite only
+    ran at -O0 and never saw it, so tests now also run at `-O3 --safe=no`.
+  - `test/js/run.sh`: 22 files, passing at -O0, at -O3 and under `--gc-stress`.
+    `c3c test`: 51 pass.
+  - **Next:** the new API (fast host calls first), the memory-limit collection, error
+    messages naming the callee ("x.y is not a function").
+
 **How to run things:**
 ```sh
 c3c build fjs && test/js/run.sh                      # differential tests against node's output
+c3c build fjs -O3 --safe=no && test/js/run.sh        # ALSO at -O3: UB only shows up optimized
+tools/use-in-three.sh                               # build ../three.c3 on fastjs (undo: git checkout -- . there)
 test/js/regen.sh                                    # after adding a test: regenerate .out files with node
 ./build/fjs --dump file.js                          # see the bytecode
 ./build/fjs --module main.js                        # run as an ES module (.mjs files always are)
@@ -744,3 +822,9 @@ c3c build lexcheck && T=../three.c3 && ./build/lexcheck $T/examples/*.js $T/src/
 - `x ?? FAULT~` is still optional: write `x ?? FAULT~!` to unwrap or return.
 - `@clone_slice(s)` copies a slice to the heap. There's no `.copy` on non-string slices.
 - `mem::tnew(T)` allocates in temp memory. `foreach` indexes are signed `sz`.
+- **Casting an out-of-range double to an integer type is UB.** At -O0 x86 happens to give
+  INT_MIN; at -O1+ LLVM folds `(double)(int)d == d` to true. Range-check before every cast.
+- `DString.str_view()` points into the DString's own buffer, past its header, so it can't be
+  freed as a String. Return `str_view().copy(allocator)`, from a tmem DString in a `@pool`.
+- `nextcase RET;` jumps to another case of the same switch; the interpreter uses it to share
+  RET's frame-popping code with GENSTART and AWAIT.

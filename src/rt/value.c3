@@ -55,6 +55,9 @@ fn double Value.as_number(self) @inline => self.is_int() ? (double)self.as_int()
 *>
 fn Value number(double d) @inline
 {
+	// Range-check first: converting an out-of-range double to int is undefined, and the optimizer
+	// will happily fold the round-trip test below to true.
+	if (!(d >= -2147483648.0 && d <= 2147483647.0)) return double_value(d);
 	int i = (int)d;
 	if ((double)i == d && (i != 0 || bitcast(d, ulong) == 0)) return integer(i);
 	return double_value(d);

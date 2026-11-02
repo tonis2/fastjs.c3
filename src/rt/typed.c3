@@ -131,7 +131,7 @@ fn Value? native_array_buffer(Vm* vm, Value this_value, Value[] args, JsFunction
 {
 	if (this_value != EMPTY) return vm.throw_error(TYPE_ERROR, "Constructor ArrayBuffer requires 'new'")~;
 	double n = arg(args, 0).is_undefined() ? 0 : vm.to_number(args[0])!;
-	if (n < 0 || n != n) return vm.throw_error(RANGE_ERROR, "Invalid array buffer length")~;
+	if (n < 0 || n != n || n > 2147483648.0) return vm.throw_error(RANGE_ERROR, "Invalid array buffer length")~;
 	return object_value(vm.new_buffer((usz)n)!);
 }
 
@@ -187,6 +187,8 @@ fn Value? native_typed_array(Vm* vm, Value this_value, Value[] args, JsFunction*
 	{
 		JsArrayBuffer* b = (JsArrayBuffer*)first.as_object();
 		double off = arg(args, 1).is_undefined() ? 0 : vm.to_number(args[1])!;
+		if (off != off) off = 0;
+		if (off > (double)b.byte_length) return vm.throw_error(RANGE_ERROR, "Start offset %s is outside the bounds of the buffer", vm.describe(args[1]))~;
 		if (off < 0 || (ulong)off % kind.size != 0) return vm.throw_error(RANGE_ERROR, "start offset of %s should be a multiple of %d", kind.name, kind.size)~;
 		if (off > b.byte_length) return vm.throw_error(RANGE_ERROR, "Start offset %d is outside the bounds of the buffer", (ulong)off)~;
 		double len;
@@ -317,6 +319,26 @@ fn Value? native_typed_set(Vm* vm, Value this_value, Value[] args, JsFunction* c
 	return UNDEFINED;
 }
 
+<*
+ copyWithin(target, start, end) on a typed array: one memmove.
+*>
+fn Value? native_typed_copy_within(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	JsTypedArray* t = vm.this_typed(this_value, "copyWithin")!;
+	if (t.buffer.immutable) return vm.throw_error(TYPE_ERROR, "ArrayBuffer is immutable")~;
+	uint len = t.length;
+	uint to = vm.relative_index(arg(args, 0), len, 0)!;
+	uint from = vm.relative_index(arg(args, 1), len, 0)!;
+	uint end = arg(args, 2).is_undefined() ? len : vm.relative_index(args[2], len, len)!;
+	if (end > from && to < len)
+	{
+		uint count = min(end - from, len - to);
+		usz size = t.tkind.size;
+		mem::move(t.data + (usz)to * size, t.data + (usz)from * size, (sz)((usz)count * size));
+	}
+	return this_value;
+}
+
 fn Value? native_typed_fill(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
 	JsTypedArray* t = vm.this_typed(this_value, "fill")!;
@@ -369,6 +391,7 @@ fn void Vm.detach_buffer(&self, JsArrayBuffer* b)
 	b.data = null;
 	b.byte_length = 0;
 	b.external = true;
+	self.finish_sweep();
 	for (GcHeader* h = self.heap.all; h; h = h.next)
 	{
 		if (h.kind != OBJECT) continue;
@@ -380,6 +403,53 @@ fn void Vm.detach_buffer(&self, JsArrayBuffer* b)
 		t.length = 0;
 		t.byte_offset = 0;
 	}
+}
+
+<*
+ Float32Array.from(source, mapFn?) and Float32Array.of(...items); magic is the TypedKind, plus
+ 0x100 for `of`.
+*>
+fn Value? native_typed_from(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	TypedKind kind = TypedKind::from_ordinal(callee.magic & 0xFF);
+	JsArray* items;
+	if (callee.magic & 0x100)
+	{
+		items = vm.heap.new_array(vm.array_proto, (uint)args.len) ?? vm.oom()~!;
+		foreach (a : args) items.push(a);
+	}
+	else
+	{
+		Value source = arg(args, 0);
+		if (source.is_nullish()) return vm.throw_error(TYPE_ERROR, "%s.from requires an array-like or iterable object", kind.name)~;
+		if (source.is_string() || (source.is_object() && vm.get(source, vm.sym_iterator)!.is_function()))
+		{
+			items = vm.iterable_to_array(source)!;
+		}
+		else
+		{
+			uint n = vm.length_of(source)!;
+			items = vm.heap.new_array(vm.array_proto, n) ?? vm.oom()~!;
+			for (uint i = 0; i < n; i++) items.push(vm.index_get(source, i)!);
+		}
+	}
+	// Keep the items reachable while a map function runs.
+	vm.native_depth++;
+	defer vm.native_depth--;
+	Value map = arg(args, 1);
+	if (!(callee.magic & 0x100) && !map.is_undefined() && !map.is_function()) return vm.throw_error(TYPE_ERROR, "%s is not a function", vm.describe(map))~;
+	JsTypedArray* t = vm.new_typed(kind, vm.new_buffer((usz)items.length * kind.size)!, 0, items.length)!;
+	for (uint i = 0; i < items.length; i++)
+	{
+		Value v = items.elements[i] == EMPTY ? UNDEFINED : items.elements[i];
+		if (map.is_function() && !(callee.magic & 0x100))
+		{
+			Value[2] margs = { v, integer((int)i) };
+			v = vm.call(map, arg(args, 2), &margs)!;
+		}
+		t.set_number(i, vm.to_number(v)!);
+	}
+	return object_value(t);
 }
 
 // ---- DataView ----
@@ -472,6 +542,7 @@ fn void? Vm.init_typed_arrays(&self)
 	self.define_native(base, "slice", &native_typed_slice, 2)!;
 	self.define_native(base, "set", &native_typed_set, 1)!;
 	self.define_native(base, "fill", &native_typed_fill, 1)!;
+	self.define_native(base, "copyWithin", &native_typed_copy_within, 2)!;
 	// Generic array methods work on typed arrays through get/set with index keys.
 	self.define_native(base, "map", &native_typed_map, 1)!.magic = 0;
 	self.define_native(base, "filter", &native_typed_map, 1)!.magic = 1;
@@ -493,6 +564,8 @@ fn void? Vm.init_typed_arrays(&self)
 		self.typed_protos[kind.ordinal] = proto;
 		JsFunction* ctor = self.define_constructor(kind.name, &native_typed_array, 3, proto)!;
 		ctor.magic = (int)kind.ordinal;
+		self.define_native(ctor, "from", &native_typed_from, 1)!.magic = (int)kind.ordinal;
+		self.define_native(ctor, "of", &native_typed_from, 0)!.magic = (int)kind.ordinal | 0x100;
 		ctor.add(&self.heap, self.atom_value("BYTES_PER_ELEMENT")!, integer((int)kind.size), {})!;
 		proto.add(&self.heap, self.atom_value("BYTES_PER_ELEMENT")!, integer((int)kind.size), {})!;
 	}

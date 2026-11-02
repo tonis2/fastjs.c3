@@ -50,6 +50,8 @@ struct HoistedFunction
 struct ModuleRecord
 {
 	String name;
+	// Kept for Function.prototype.toString, which slices it.
+	String source;
 	FunctionProto* main;
 	// Specifiers as written, and the modules they resolved to (filled in while loading).
 	List {String} requests;
@@ -86,6 +88,7 @@ struct ModuleHooks
 fn void ModuleRecord.free(&self)
 {
 	free(self.name);
+	free(self.source);
 	if (self.main)
 	{
 		self.main.free();
@@ -208,7 +211,7 @@ fn void? Vm.link_module(&self, ModuleRecord* root)
 		foreach (h : m.hoisted)
 		{
 			FunctionProto* proto = m.main.protos[h.proto];
-			JsFunction* f = (JsFunction*)self.heap.new_object(self.function_proto, FUNCTION, JsFunction::size) ?? self.oom()~!;
+			JsFunction* f = (JsFunction*)self.heap.new_object(self.function_proto_for(proto), FUNCTION, JsFunction::size) ?? self.oom()~!;
 			f.proto = proto;
 			f.fields_init = UNDEFINED;
 			f.bound_this = UNDEFINED;

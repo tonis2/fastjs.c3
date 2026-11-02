@@ -73,6 +73,8 @@ fn void? Vm.init_builtins(&self)
 	self.define_native(self.number_proto, "toString", &native_number_to_string, 1)!;
 	self.define_native(self.number_proto, "valueOf", &native_number_value_of, 0)!;
 	self.define_native(self.number_proto, "toFixed", &native_number_to_fixed, 1)!;
+	self.define_native(self.number_proto, "toPrecision", &native_number_to_precision, 1)!;
+	self.define_native(self.number_proto, "toExponential", &native_number_to_exponential, 1)!;
 	self.define_constructor("Boolean", &native_boolean, 1, self.boolean_proto)!;
 
 	JsObject* m = h.new_object(self.object_proto)!;
@@ -90,6 +92,7 @@ fn void? Vm.init_builtins(&self)
 	self.init_lib()!;
 	self.init_regexp()!;
 	self.init_coroutines()!;
+	self.init_proxy()!;
 }
 
 // ---- console ----
@@ -151,6 +154,7 @@ fn Value? native_has_own_property(Vm* vm, Value this_value, Value[] args, JsFunc
 	if (!this_value.is_object()) return FALSE;
 	Value key = vm.to_key(arg(args, 0))!;
 	JsObject* o = this_value.as_object();
+	if (o.is_proxy) return boolean(vm.proxy_has_own(o, key)!);
 	if (o.kind == ARRAY && key.is_int()) return boolean(((JsArray*)o).get((uint)key.as_int()) != EMPTY);
 	return boolean(o.find_own(key) != null);
 }
@@ -196,7 +200,7 @@ fn Value? native_object_get_prototype_of(Vm* vm, Value this_value, Value[] args,
 	JsObject* proto;
 	switch
 	{
-		case v.is_object(): proto = v.as_object().proto();
+		case v.is_object(): proto = vm.proto_of(v.as_object())!;
 		case v.is_string(): proto = vm.string_proto;
 		case v.is_number(): proto = vm.number_proto;
 		case v.is_bool(): proto = vm.boolean_proto;
@@ -423,4 +427,146 @@ fn Value? native_math_min(Vm* vm, Value this_value, Value[] args, JsFunction* ca
 		if (d < best || (d == 0 && best == 0 && bitcast(d, ulong) != 0)) best = d;
 	}
 	return number(best);
+}
+
+<*
+ The first p significant decimal digits of x > 0, rounded half up on (nearly) its exact value as
+ the spec asks, and the decimal exponent of the first digit.
+*>
+fn int significant_digits(double x, int p, char* digits)
+{
+	char[400] buf;
+	// Print extra digits so rounding happens here, half up, rather than in printf, half to even.
+	snprintf(&buf, buf.len, "%.*e", (CInt)(p + 40), x);
+	int n = 0;
+	usz i = 0;
+	char[160] all;
+	while (buf[i] != 'e')
+	{
+		if (buf[i] != '.') all[n++] = buf[i];
+		i++;
+	}
+	int exponent = ((String)((ZString)&buf[i + 1]).str_view()).to_int()!!;
+	for (int k = 0; k < p; k++) digits[k] = all[k];
+	if (all[p] >= '5')
+	{
+		int k = p - 1;
+		while (k >= 0 && digits[k] == '9')
+		{
+			digits[k] = '0';
+			k--;
+		}
+		if (k < 0)
+		{
+			// 9.99 rounded to 10.0: one more digit before the point.
+			digits[0] = '1';
+			exponent++;
+		}
+		else
+		{
+			digits[k]++;
+		}
+	}
+	return exponent;
+}
+
+fn Value? native_number_to_precision(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	if (!this_value.is_number()) return vm.throw_error(TYPE_ERROR, "Number.prototype.toPrecision requires that 'this' be a Number")~;
+	if (arg(args, 0).is_undefined()) return string_value(vm.to_string(this_value)!);
+	double p = vm.to_number(args[0])!;
+	double x = this_value.as_number();
+	if (x != x || x == double::inf || x == -double::inf) return string_value(vm.to_string(this_value)!);
+	if (p < 1 || p > 100 || p != p) return vm.throw_error(RANGE_ERROR, "toPrecision() argument must be between 1 and 100")~;
+	int digits_wanted = (int)p;
+	DString out;
+	out.tinit();
+	if (x < 0)
+	{
+		out.append('-');
+		x = -x;
+	}
+	char[101] d;
+	int e = 0;
+	if (x == 0)
+	{
+		for (int k = 0; k < digits_wanted; k++) d[k] = '0';
+	}
+	else
+	{
+		e = significant_digits(x, digits_wanted, &d);
+	}
+	String ds = (String)d[:digits_wanted];
+	if (e < -6 || e >= digits_wanted)
+	{
+		out.append(ds[0]);
+		if (digits_wanted > 1)
+		{
+			out.append('.');
+			out.append(ds[1..]);
+		}
+		out.appendf("e%s%d", e >= 0 ? "+" : "-", e >= 0 ? e : -e);
+	}
+	else if (e >= 0)
+	{
+		out.append(ds[:e + 1]);
+		if (digits_wanted > e + 1)
+		{
+			out.append('.');
+			out.append(ds[e + 1..]);
+		}
+	}
+	else
+	{
+		out.append("0.");
+		for (int k = 0; k < -(e + 1); k++) out.append('0');
+		out.append(ds);
+	}
+	return vm.str_value(out.str_view());
+}
+
+fn Value? native_number_to_exponential(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	if (!this_value.is_number()) return vm.throw_error(TYPE_ERROR, "Number.prototype.toExponential requires that 'this' be a Number")~;
+	double x = this_value.as_number();
+	bool shortest = arg(args, 0).is_undefined();
+	double f = shortest ? 0 : vm.to_number(args[0])!;
+	if (x != x || x == double::inf || x == -double::inf) return string_value(vm.to_string(this_value)!);
+	if (f < 0 || f > 100 || f != f) return vm.throw_error(RANGE_ERROR, "toExponential() argument must be between 0 and 100")~;
+	DString out;
+	out.tinit();
+	if (x < 0)
+	{
+		out.append('-');
+		x = -x;
+	}
+	int p = (int)f + 1;
+	char[101] d;
+	int e = 0;
+	if (shortest && x != 0)
+	{
+		// As few digits as identify the number.
+		for (p = 1; p <= 17; p++)
+		{
+			char[40] probe;
+			snprintf(&probe, probe.len, "%.*e", (CInt)(p - 1), x);
+			if (((String)((ZString)&probe).str_view()).to_double()!! == x) break;
+		}
+	}
+	if (x == 0)
+	{
+		for (int k = 0; k < p; k++) d[k] = '0';
+	}
+	else
+	{
+		e = significant_digits(x, p, &d);
+	}
+	out.append(d[0]);
+	if (p > 1)
+	{
+		out.append('.');
+		out.append((String)d[1:p - 1]);
+	}
+	out.appendf("e%s%d", e >= 0 ? "+" : "-", e >= 0 ? e : -e);
+	return vm.str_value(out.str_view());
 }

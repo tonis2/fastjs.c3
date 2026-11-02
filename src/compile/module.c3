@@ -32,6 +32,7 @@ fn ModuleRecord*? compile_module(Vm* vm, String source, String name, CompileErro
 
 	ModuleRecord* m = mem::new(ModuleRecord);
 	m.name = name.copy(mem);
+	m.source = source.copy(mem);
 	m.namespace = rt::UNDEFINED;
 	m.promise = rt::UNDEFINED;
 	m.requests.init(mem);
@@ -39,7 +40,7 @@ fn ModuleRecord*? compile_module(Vm* vm, String source, String name, CompileErro
 	List {HoistedFunction} hoisted;
 	hoisted.init(mem);
 	defer hoisted.free();
-	Codegen g = { .vm = vm, .arena = &arena, .source_name = m.name };
+	Codegen g = { .vm = vm, .arena = &arena, .source_name = m.name, .source_text = m.source };
 	FunctionProto*? main = g.compile_module(program, &hoisted);
 	if (catch main)
 	{

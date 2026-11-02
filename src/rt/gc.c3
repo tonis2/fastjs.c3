@@ -1,5 +1,5 @@
 module fastjs::rt;
-import std::collections::list;
+import std::collections::list, std::time, std::io;
 
 // Stop-the-world mark and sweep. Collection happens only at safe points: instruction boundaries
 // in the interpreter, and never while a native function is on the C stack, so native code never
@@ -31,6 +31,13 @@ fn void mark_value(MarkStack* stack, Value v) @inline
 *>
 fn void Vm.maybe_gc(&self) @inline
 {
+	// Two dead blocks swept per block allocated: the sweep keeps ahead of new garbage without
+	// landing in one frame, which is what freeing a collection's worth at once would do.
+	if (self.heap.sweep_link && self.heap.sweep_credit)
+	{
+		self.sweep_step(min(self.heap.sweep_credit * 2, SWEEP_SLICE));
+		self.heap.sweep_credit = 0;
+	}
 	if (self.heap.bytes >= self.gc_threshold && self.native_depth == 0) self.collect();
 }
 
@@ -54,7 +61,10 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 		mark_ptr(stack, f.coroutine);
 	}
 	mark_ptr(stack, self.generator_proto);
+	mark_ptr(stack, self.async_function_proto);
+	mark_ptr(stack, self.generator_function_proto);
 	mark_ptr(stack, self.data_view_proto);
+	mark_ptr(stack, self.proxy_holder);
 	mark_ptr(stack, self.promise_proto);
 	for (sz i = self.job_head; i < self.jobs.len(); i++) mark_job(stack, &self.jobs[i]);
 	mark_job(stack, &self.current_job);
@@ -150,6 +160,9 @@ fn void trace(MarkStack* stack, GcHeader* h)
 				case REGEXP:
 					mark_value(stack, ((JsRegExp*)o).source);
 					mark_value(stack, ((JsRegExp*)o).flags);
+				case PROXY:
+					mark_value(stack, ((JsFunction*)o).native_data);
+					mark_value(stack, ((JsFunction*)o).native_data2);
 				case COROUTINE:
 					JsCoroutine* c = (JsCoroutine*)o;
 					mark_ptr(stack, c.function);
@@ -174,21 +187,36 @@ fn void trace(MarkStack* stack, GcHeader* h)
 	}
 }
 
+const uint SWEEP_SLICE = 128;
+
 <*
- Free everything unreachable.
+ Free everything unreachable. Only the mark is a pause: dead objects are freed a slice at a
+ time at later safe points (sweep_step), since nothing can reach them any more. Shapes are
+ swept at once, because dead ones must leave their parents' transition lists first.
 *>
 fn void Vm.collect(&self)
 {
+	Clock started = clock::now();
+	self.finish_sweep();
 	MarkStack stack;
 	stack.init(mem, 256);
 	defer stack.free();
 	self.mark_roots(&stack);
-	while (try h = stack.pop()) trace(&stack, h);
-
-	// Dead shapes must leave their parents' transition lists before they are freed.
-	for (GcHeader* h = self.heap.all; h; h = h.next)
+	usz live = 0;
+	while (try h = stack.pop())
 	{
-		if (h.kind != SHAPE || !h.marked) continue;
+		live += h.size;
+		trace(&stack, h);
+	}
+	long marked_ns = (long)started.to_now();
+
+	// Caches that point at a dead shape are forgotten while the mark bits still say which are dead.
+	foreach (script : self.scripts) script.main.clear_dead_ics();
+	foreach (m : self.modules) m.main.clear_dead_ics();
+	// Dead shapes leave their parents' transition lists, then go.
+	for (GcHeader* h = self.heap.shapes; h; h = h.next)
+	{
+		if (!h.marked) continue;
 		Shape** link = &((Shape*)h).first_child;
 		while (Shape* child = *link)
 		{
@@ -202,20 +230,67 @@ fn void Vm.collect(&self)
 			}
 		}
 	}
-	// An unmarked prototype root can't be reused either.
-	for (GcHeader* h = self.heap.all; h; h = h.next)
-	{
-		if (h.kind == OBJECT && h.marked)
-		{
-			JsObject* o = (JsObject*)h;
-			if (o.child_root && !o.child_root.marked) o.child_root = null;
-		}
-	}
-
-	GcHeader** link = &self.heap.all;
-	usz freed = 0;
+	GcHeader** link = &self.heap.shapes;
 	while (GcHeader* h = *link)
 	{
+		if (h.marked)
+		{
+			h.marked = false;
+			link = &h.next;
+			continue;
+		}
+		*link = h.next;
+		self.release_block(h);
+	}
+	// Objects allocated from here on go on a fresh list; the marked one is swept lazily.
+	self.heap.unswept = self.heap.all;
+	self.heap.all = null;
+	self.heap.sweep_link = &self.heap.unswept;
+	if (self.gc_stress)
+	{
+		self.finish_sweep();
+		self.verify_heap();
+	}
+	self.gc_count++;
+	long total_ns = (long)started.to_now();
+	self.gc_total_ns += total_ns;
+	self.gc_mark_ns += marked_ns;
+	self.gc_sweep_ns += total_ns - marked_ns;
+	if (total_ns > self.gc_max_ns) self.gc_max_ns = total_ns;
+	self.gc_threshold = self.gc_stress ? 0 : max(live * 2, self.gc_min_threshold);
+	if (self.gc_trace) io::eprintfn("fastjs gc #%d: %.3f ms (mark %.3f), live %d KiB, next at %d KiB, %d host roots", self.gc_count, total_ns / 1e6, marked_ns / 1e6, live / 1024, self.gc_threshold / 1024, self.roots.len());
+}
+
+fn void Vm.release_block(&self, GcHeader* h)
+{
+	self.heap.bytes -= h.size;
+	if (h.kind == OBJECT && ((JsObject*)h).kind == ARRAY_BUFFER && !((JsArrayBuffer*)h).external) self.heap.bytes -= ((JsArrayBuffer*)h).byte_length;
+	finalize(h);
+	// Under stress, poison dead blocks so a use after free crashes where it happens.
+	if (self.gc_stress) mem::set(h, 0xEE, h.size);
+	free(h);
+	self.gc_freed++;
+}
+
+<*
+ Sweep up to `budget` blocks of the last collection. Returns whether the sweep is done.
+*>
+fn bool Vm.sweep_step(&self, uint budget = SWEEP_SLICE)
+{
+	GcHeader** link = self.heap.sweep_link;
+	if (!link) return true;
+	while (budget-- > 0)
+	{
+		GcHeader* h = *link;
+		if (!h)
+		{
+			// Done: the survivors go back in front of everything allocated since.
+			*link = self.heap.all;
+			self.heap.all = self.heap.unswept;
+			self.heap.unswept = null;
+			self.heap.sweep_link = null;
+			return true;
+		}
 		// Atoms are permanent until the atom table becomes weak.
 		if (h.marked || (h.kind == STRING && ((JsString*)h).atom))
 		{
@@ -224,20 +299,15 @@ fn void Vm.collect(&self)
 			continue;
 		}
 		*link = h.next;
-		self.heap.bytes -= h.size;
-		if (h.kind == OBJECT && ((JsObject*)h).kind == ARRAY_BUFFER && !((JsArrayBuffer*)h).external) self.heap.bytes -= ((JsArrayBuffer*)h).byte_length;
-		finalize(h);
-		// Under stress, poison dead blocks so a use after free crashes where it happens.
-		if (self.gc_stress) mem::set(h, 0xEE, h.size);
-		free(h);
-		freed++;
+		self.release_block(h);
 	}
-	foreach (script : self.scripts) script.main.clear_ics();
-	foreach (m : self.modules) m.main.clear_ics();
-	if (self.gc_stress) self.verify_heap();
-	self.gc_count++;
-	self.gc_freed += freed;
-	self.gc_threshold = self.gc_stress ? 0 : max(self.heap.bytes * 2, GC_MIN_THRESHOLD);
+	self.heap.sweep_link = link;
+	return false;
+}
+
+fn void Vm.finish_sweep(&self)
+{
+	while (!self.sweep_step(uint::max)) {}
 }
 
 <*
@@ -245,6 +315,7 @@ fn void Vm.collect(&self)
 *>
 fn void Vm.verify_heap(&self)
 {
+	for (GcHeader* h = self.heap.shapes; h; h = h.next) assert(!h.marked, "mark bit left set on a shape");
 	for (GcHeader* h = self.heap.all; h; h = h.next)
 	{
 		assert(!h.marked, "mark bit left set");

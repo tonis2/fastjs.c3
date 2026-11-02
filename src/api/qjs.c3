@@ -203,13 +203,13 @@ fn String Context.exception(&self, Allocator allocator = mem)
 	String trace = self.text(wrapped(stack), allocator);
 	if (trace.len == 0)
 	{
-		free(trace);
+		alloc::free(allocator, trace.ptr);
 		return message;
 	}
 	// This engine's stack already starts with "Name: message"; don't say it twice.
 	if (trace.starts_with(message))
 	{
-		free(message);
+		alloc::free(allocator, message.ptr);
 		return trace;
 	}
 	String joined = string::format(allocator, "%s\n%s", message, trace);
@@ -464,6 +464,7 @@ fn long Context.length(&self, Value value)
 	double? d = vm.to_number(len);
 	if (catch d) return -1;
 	if (d != d || d < 0) return 0;
+	if (d > 9007199254740991.0) return 9007199254740991;
 	return (long)d;
 }
 

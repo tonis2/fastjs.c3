@@ -7,7 +7,15 @@ excuse OUT_OF_MEMORY;
 *>
 struct Heap
 {
+	// Everything except shapes, newest first.
 	GcHeader* all;
+	// Shapes, kept apart so the collector can fix transition lists without walking every object.
+	GcHeader* shapes;
+	// What the last collection marked and hasn't finished sweeping yet (see Vm.sweep_step).
+	GcHeader* unswept;
+	GcHeader** sweep_link;
+	// Blocks allocated since the sweep last ran: sweeping is paid for by allocating.
+	uint sweep_credit;
 	usz bytes;
 	// 0 means no limit.
 	usz limit;
@@ -32,13 +40,16 @@ fn void Heap.init(&self, usz limit = 0)
 *>
 fn void Heap.free(&self)
 {
-	GcHeader* h = self.all;
-	while (h)
+	foreach (list : (GcHeader*[3]){ self.all, self.shapes, self.unswept })
 	{
-		GcHeader* next = h.next;
-		finalize(h);
-		free(h);
-		h = next;
+		GcHeader* h = list;
+		while (h)
+		{
+			GcHeader* next = h.next;
+			finalize(h);
+			free(h);
+			h = next;
+		}
 	}
 	free(self.atoms);
 	*self = {};
@@ -57,9 +68,18 @@ fn void*? Heap.alloc(&self, HeapKind kind, usz size)
 	GcHeader* h = (GcHeader*)mem::calloc((sz)size);
 	h.kind = kind;
 	h.size = (uint)size;
-	h.next = self.all;
-	self.all = h;
+	if (kind == SHAPE)
+	{
+		h.next = self.shapes;
+		self.shapes = h;
+	}
+	else
+	{
+		h.next = self.all;
+		self.all = h;
+	}
 	self.bytes += size;
+	self.sweep_credit++;
 	return h;
 }
 

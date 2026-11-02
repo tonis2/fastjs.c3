@@ -705,9 +705,23 @@ fn Value? native_queue_microtask(Vm* vm, Value this_value, Value[] args, JsFunct
 	return UNDEFINED;
 }
 
+fn Value? native_function_constructor(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	return vm.throw_error(SYNTAX_ERROR, "%s() is not supported: this engine has no eval", callee.native_name)~;
+}
+
 fn void? Vm.init_coroutines(&self)
 {
 	Heap* h = &self.heap;
+	self.define_constructor("Function", &native_function_constructor, 1, self.function_proto)!;
+	self.async_function_proto = h.new_object(self.function_proto)!;
+	self.generator_function_proto = h.new_object(self.function_proto)!;
+	JsFunction* async_ctor = self.new_native("AsyncFunction", &native_function_constructor, 1)!;
+	async_ctor.add(h, self.atoms.prototype, object_value(self.async_function_proto), {})!;
+	self.async_function_proto.add(h, self.atoms.constructor, object_value(async_ctor), METHOD_PROP)!;
+	JsFunction* gen_ctor = self.new_native("GeneratorFunction", &native_function_constructor, 1)!;
+	gen_ctor.add(h, self.atoms.prototype, object_value(self.generator_function_proto), {})!;
+	self.generator_function_proto.add(h, self.atoms.constructor, object_value(gen_ctor), METHOD_PROP)!;
 	self.generator_proto = h.new_object(self.object_proto)!;
 	foreach (i, name : (String[3]){ "next", "throw", "return" })
 	{

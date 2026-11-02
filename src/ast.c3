@@ -108,6 +108,8 @@ struct Node
 	TokenKind op;
 	NodeFlags flags;
 	uint start;
+	// Functions and classes: the offset just past their last token, for Function.prototype.toString.
+	uint end;
 	uint line;
 	uint col;
 	Node* a;

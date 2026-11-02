@@ -1,0 +1,16 @@
+14 7 2 5 hud true true
+[ 'score', 'label', 'count' ] {"score":14,"label":"hud","count":2} true true
+Hud { score: 14, label: 'hud', count: 2, Symbol(state): { dirty: 5 } }
+2.5 true false [ 'time', 'color' ] { time: 2.5, color: [ 1, 0, 0 ] } {"time":2.5,"color":[1,0,0]}
+TypeError no uniform called 'nope'
+key time
+key color
+[ [ 'time', 2.5 ], [ 'color', [ 1, 0, 0 ] ] ]
+2 [ 1, 2 ] [ 50, 60 ] [ 1, 50 ]
+write a row, like rows[0] = [1, 0]
+new Critter() is not how a tracked class is built
+3 true critter function Critter
+[ 'get a', 'has a', 'delete a', 'define b', 'get b' ] 2
+300 function
+Constructor Proxy requires 'new'
+Cannot create proxy with a non-object as target or handler

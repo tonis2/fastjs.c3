@@ -165,6 +165,9 @@ fn String? Vm.format_value(&self, InspectCtx* ctx, Value v, int recurse)
 			break;
 	}
 	JsObject* o = v.as_object();
+	// Like node with showProxy off: a proxy prints as its target, without running any trap.
+	while (o.is_proxy) o = o.proxy_target().as_object();
+	v = object_value(o);
 	if (ctx.seen.contains(o))
 	{
 		sz? index = ctx.circular.index_of(o);

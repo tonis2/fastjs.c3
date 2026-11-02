@@ -1,5 +1,5 @@
 module fastjs::rt;
-import std::collections::list, std::core::dstring, std::time;
+import std::collections::list, std::core::dstring, std::time, std::io, std::os::env;
 
 // A JS exception is pending in Vm.exception.
 excuse THROWN;
@@ -140,7 +140,12 @@ struct Vm
 	JsObject* regexp_proto;
 	JsObject*[TypedKind::len] typed_protos;
 	JsObject* data_view_proto;
+	JsObject* proxy_holder;
 	JsObject* generator_proto;
+	// Prototypes of async and generator functions, whose `constructor`s are AsyncFunction and
+	// GeneratorFunction (hosts tell an async callback by that name).
+	JsObject* async_function_proto;
+	JsObject* generator_function_proto;
 	JsObject* promise_proto;
 	// Promise jobs, oldest first from job_head; the running one is kept in current_job.
 	List {Job} jobs;
@@ -171,6 +176,7 @@ struct Vm
 	// Native functions currently on the C stack; collection waits until there are none.
 	uint native_depth;
 	usz gc_threshold;
+	usz gc_min_threshold;
 	// Asked now and then whether to stop a long-running script (see check_interrupt).
 	InterruptHandler interrupt;
 	void* interrupt_runtime;
@@ -182,6 +188,14 @@ struct Vm
 	bool gc_stress;
 	usz gc_count;
 	usz gc_freed;
+	// Time spent collecting, for tuning: total, the longest pause, and its parts.
+	long gc_total_ns;
+	long gc_max_ns;
+	long gc_mark_ns;
+	long gc_sweep_ns;
+	usz gc_live_max;
+	// FASTJS_GC_TRACE: print every collection.
+	bool gc_trace;
 }
 
 <*
@@ -207,12 +221,19 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.unhandled.init(mem);
 	self.modules.init(mem);
 	self.gc_threshold = GC_MIN_THRESHOLD;
+	self.gc_min_threshold = GC_MIN_THRESHOLD;
+	self.gc_trace = @ok(env::tget_var("FASTJS_GC_TRACE"));
+	if (try mb = env::tget_var("FASTJS_GC_MB")) self.gc_min_threshold = (usz)(mb.to_int() ?? 4) * 1024 * 1024;
 	self.init_atoms()!;
 	self.init_builtins()!;
 }
 
 fn void Vm.free(&self)
 {
+	if (@ok(env::tget_var("FASTJS_GC_STATS")))
+	{
+		io::eprintfn("fastjs gc: %d collections, %.2f ms total (mark %.2f, sweep %.2f), longest %.3f ms, heap now %d KiB", self.gc_count, self.gc_total_ns / 1e6, self.gc_mark_ns / 1e6, self.gc_sweep_ns / 1e6, self.gc_max_ns / 1e6, self.heap.bytes / 1024);
+	}
 	foreach (s : self.scripts)
 	{
 		s.main.free();
@@ -416,6 +437,16 @@ fn JsFunction*? Vm.define_native(&self, JsObject* obj, String name, NativeFn nat
 }
 
 fn bool Value.is_function(self) => self.is_object() && self.as_object().kind == FUNCTION;
+
+<*
+ The prototype a new closure of p gets.
+*>
+fn JsObject* Vm.function_proto_for(&self, FunctionProto* p) @inline
+{
+	if (p.is_async) return self.async_function_proto;
+	if (p.is_generator) return self.generator_function_proto;
+	return self.function_proto;
+}
 
 <*
  Push a frame for a JS function whose arguments are already at stack[base + 1 ...].

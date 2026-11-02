@@ -193,6 +193,8 @@ struct FunctionProto
 {
 	String name;
 	String source_name;
+	// Its source text, for Function.prototype.toString: a slice of the owning script's copy.
+	String source;
 	uint[] code;
 	uint[] lines;
 	Value[] consts;
@@ -239,6 +241,22 @@ fn void FunctionProto.clear_ics(&self)
 {
 	mem::clear(self.ics.ptr, self.ics.len * IcEntry::size);
 	foreach (p : self.protos) p.clear_ics();
+}
+
+fn bool dead_shape(Shape* s) @inline => s != null && !s.marked;
+
+<*
+ After marking: forget only the cache entries that point at shapes about to be freed, so code
+ stays warm across a collection.
+*>
+fn void FunctionProto.clear_dead_ics(&self)
+{
+	foreach (&ic : self.ics)
+	{
+		if (ic.kind == EMPTY) continue;
+		if (dead_shape(ic.shape) || dead_shape(ic.holder_shape) || dead_shape(ic.new_shape)) *ic = {};
+	}
+	foreach (p : self.protos) p.clear_dead_ics();
 }
 
 <*

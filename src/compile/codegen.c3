@@ -67,6 +67,8 @@ struct Codegen
 	Allocator arena;
 	FuncState* fs;
 	String source_name;
+	// The source being compiled, owned by the Script or module record, which functions slice.
+	String source_text;
 	// Set while compiling a class's constructor, so it knows whether instance fields exist.
 	bool pending_class_fields;
 	String error;
@@ -423,6 +425,7 @@ fn FunctionProto* Codegen.end_function(&self, FuncState* fs, Node* node, String 
 	p.nregs = fs.max_reg + 1;
 	p.line = node.line;
 	p.has_rest = has_rest;
+	if (node.end > node.start && node.end <= self.source_text.len) p.source = self.source_text[node.start:node.end - node.start];
 	if (node.kind == FUNCTION)
 	{
 		p.is_arrow = node.flags.arrow;
@@ -2070,6 +2073,8 @@ fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
 	self.pending_class_fields = n.b != null;
 	FunctionProto*? p = self.compile_function(ctor, name);
 	self.pending_class_fields = outer_pending;
+	// A class's toString is the whole class.
+	if (try p && n.end > n.start && n.end <= self.source_text.len) p.source = self.source_text[n.start:n.end - n.start];
 	self.fs.protos.push(p!);
 	self.emit_abx(CLOSURE, base, (uint)self.fs.protos.len() - 1);
 	self.emit_abc(DEFCLASS, base, base + 2, has_extends ? 1 : 0);

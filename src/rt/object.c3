@@ -53,6 +53,8 @@ enum ObjectKind : char
 	PROMISE,
 	// A JsTypedArray of bytes with no indexed elements, read through get/set methods.
 	DATA_VIEW,
+	// A Proxy of a non-callable target (a proxy of a function is a FUNCTION).
+	PROXY,
 }
 
 struct JsObject
@@ -60,6 +62,8 @@ struct JsObject
 	inline GcHeader header;
 	ObjectKind kind;
 	bool frozen_extensions;
+	// A Proxy (see proxy.c3): property operations go to its handler's traps.
+	bool is_proxy;
 	Shape* shape;
 	Value* slots;
 	uint slot_cap;

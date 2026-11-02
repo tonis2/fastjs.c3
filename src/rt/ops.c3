@@ -309,6 +309,7 @@ fn Value? Vm.get_from(&self, JsObject* o, Value key, Value receiver)
 {
 	while (o)
 	{
+		if (o.is_proxy) return self.proxy_get(o, key, receiver);
 		if (o.kind == ARRAY)
 		{
 			JsArray* arr = (JsArray*)o;
@@ -361,6 +362,7 @@ fn void? Vm.set(&self, Value obj, Value key, Value v)
 		return;
 	}
 	JsObject* o = obj.as_object();
+	if (o.is_proxy) return self.proxy_set(o, key, v, obj);
 	if (o.kind == TYPED_ARRAY && key.is_int())
 	{
 		JsTypedArray* t = (JsTypedArray*)o;
@@ -421,6 +423,7 @@ fn void? Vm.call_setter(&self, Value accessor, Value receiver, Value key, Value 
 *>
 fn void? Vm.define(&self, JsObject* o, Value key, Value v, PropFlags flags = DATA_PROP)
 {
+	if (o.is_proxy) return self.proxy_define(o, key, v, flags);
 	if (o.kind == ARRAY && key.is_int())
 	{
 		((JsArray*)o).set((uint)key.as_int(), v);
@@ -443,6 +446,7 @@ fn void? Vm.define(&self, JsObject* o, Value key, Value v, PropFlags flags = DAT
 *>
 fn void? Vm.define_accessor(&self, JsObject* o, Value key, Value getter, Value setter, PropFlags flags)
 {
+	if (o.is_proxy) return self.define_accessor(o.proxy_target().as_object(), key, getter, setter, flags);
 	flags.accessor = true;
 	Shape* s = o.find_own(key);
 	if (s && s.flags.accessor)
@@ -468,6 +472,7 @@ fn bool? Vm.has_property(&self, Value obj, Value key)
 	if (!obj.is_object()) return self.throw_error(TYPE_ERROR, "Cannot use 'in' operator to search for '%s' in %s", self.key_text(key), self.describe(obj))~;
 	for (JsObject* o = obj.as_object(); o; o = o.proto())
 	{
+		if (o.is_proxy) return self.proxy_has(o, key);
 		if (o.kind == ARRAY)
 		{
 			JsArray* arr = (JsArray*)o;
@@ -494,6 +499,7 @@ fn bool? Vm.delete_property(&self, Value obj, Value key)
 		return true;
 	}
 	JsObject* o = obj.as_object();
+	if (o.is_proxy) return self.proxy_delete(o, key);
 	if (o.kind == ARRAY && key.is_int())
 	{
 		JsArray* arr = (JsArray*)o;
@@ -518,7 +524,7 @@ fn bool? Vm.instance_of(&self, Value v, Value constructor)
 	Value proto = self.get(constructor, self.atoms.prototype)!;
 	if (!proto.is_object()) return self.throw_error(TYPE_ERROR, "Function has non-object prototype in instanceof check")~;
 	JsObject* target = proto.as_object();
-	for (JsObject* o = v.as_object().proto(); o; o = o.proto())
+	for (JsObject* o = self.proto_of(v.as_object())!; o; o = self.proto_of(o)!)
 	{
 		if (o == target) return true;
 	}
@@ -532,6 +538,7 @@ fn bool? Vm.instance_of(&self, Value v, Value constructor)
 *>
 fn void? Vm.own_keys(&self, JsObject* o, List {Value}* out, bool include_symbols = false)
 {
+	if (o.is_proxy) return self.proxy_own_keys(o, out, include_symbols);
 	if (o.kind == ARRAY)
 	{
 		JsArray* arr = (JsArray*)o;
@@ -579,6 +586,7 @@ fn void? Vm.own_keys(&self, JsObject* o, List {Value}* out, bool include_symbols
 *>
 fn Value? Vm.get_ic(&self, JsObject* o, Value key, IcEntry* ic)
 {
+	if (o.is_proxy) return self.proxy_get(o, key, object_value(o));
 	Value receiver = object_value(o);
 	if (o.kind == ARRAY && key == self.atoms.length)
 	{
@@ -617,6 +625,7 @@ fn Value? Vm.get_ic(&self, JsObject* o, Value key, IcEntry* ic)
 *>
 fn void? Vm.set_ic(&self, JsObject* o, Value key, Value v, IcEntry* ic)
 {
+	if (o.is_proxy) return self.proxy_set(o, key, v, object_value(o));
 	if (o.kind == ARRAY && key == self.atoms.length) return self.set(object_value(o), key, v);
 	Shape* s = o.find_own(key);
 	if (s)
@@ -649,6 +658,7 @@ fn void? Vm.set_ic(&self, JsObject* o, Value key, Value v, IcEntry* ic)
 *>
 fn void? Vm.define_ic(&self, JsObject* o, Value key, Value v, IcEntry* ic)
 {
+	if (o.is_proxy) return self.proxy_define(o, key, v, DATA_PROP);
 	Shape* old = o.shape;
 	self.define(o, key, v)!;
 	if (o.shape != old && o.shape.parent == old && o.shape.key == key)

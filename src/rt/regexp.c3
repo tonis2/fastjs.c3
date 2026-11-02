@@ -26,6 +26,8 @@ enum ReOp : char
 	BACKREF,    // group x
 	LOOK,       // lookahead sub-program follows; x = its end; flag = negative
 	LOOKEND,
+	LOOKBEHIND, // lookbehind sub-program follows; x = its end; y, z = its max and min width; flag = negative
+	LOOKEND_AT, // a lookbehind body matched only if it ended where the lookbehind stands
 	MARK,       // mark x = position (start of a loop iteration)
 	PROGRESS,   // fail if the loop body since MARK x consumed nothing
 }
@@ -36,6 +38,7 @@ struct ReInst
 	bool flag;
 	uint x;
 	uint y;
+	uint z;
 }
 
 struct ReRange
@@ -101,6 +104,7 @@ struct ReNode
 	uint max;
 	bool greedy;
 	bool negative;
+	bool behind;
 	ReOp assertion;
 }
 
@@ -266,7 +270,17 @@ fn ReNode*? ReParser.atom(&self)
 						self.pos++;
 						return look;
 					case '<':
-						if (self.peek() == '=' || self.peek() == '!') return self.fail("lookbehind is not supported")~;
+						if (self.peek() == '=' || self.peek() == '!')
+						{
+							ReNode* look = self.node(LOOK);
+							look.negative = self.peek() == '!';
+							look.behind = true;
+							self.pos++;
+							look.child = self.disjunction()!;
+							if (self.peek() != ')') return self.fail("unterminated group")~;
+							self.pos++;
+							return look;
+						}
 						DString name;
 						name.init(mem);
 						while (!self.at_end() && self.peek() != '>')
@@ -514,8 +528,64 @@ fn ReNode*? ReParser.class_atom(&self)
 
 fn uint Regex.emit(&self, ReOp op, uint x = 0, uint y = 0, bool flag = false)
 {
-	self.code.push({ op, flag, x, y });
+	self.code.push({ op, flag, x, y, 0 });
 	return (uint)self.code.len() - 1;
+}
+
+<*
+ How many code units n can match: at least *min, at most *max (uint::max when unbounded).
+ Lookbehind uses it to try only the start positions that could work.
+*>
+fn void node_width(ReNode* n, uint* min, uint* max)
+{
+	switch (n.kind)
+	{
+		case SEQ:
+			*min = 0;
+			*max = 0;
+			foreach (item : n.items)
+			{
+				uint a;
+				uint b;
+				node_width(item, &a, &b);
+				*min += a;
+				*max = *max == uint::max || b == uint::max ? uint::max : *max + b;
+			}
+		case ALT:
+			*min = uint::max;
+			*max = 0;
+			foreach (item : n.items)
+			{
+				uint a;
+				uint b;
+				node_width(item, &a, &b);
+				if (a < *min) *min = a;
+				if (b > *max) *max = b;
+			}
+			if (*min == uint::max) *min = 0;
+		case CHAR:
+			*min = n.value > 0xFFFF ? 2 : 1;
+			*max = *min;
+		case ANY:
+		case CLASS:
+			*min = 1;
+			*max = 2;
+		case GROUP:
+			node_width(n.child, min, max);
+		case LOOK:
+		case ASSERT:
+			*min = 0;
+			*max = 0;
+		case BACKREF:
+			*min = 0;
+			*max = uint::max;
+		case REPEAT:
+			uint a;
+			uint b;
+			node_width(n.child, &a, &b);
+			*min = a * n.min;
+			*max = n.max == uint::max || b == uint::max ? uint::max : (b > 0 && n.max > uint::max / b ? uint::max : b * n.max);
+	}
 }
 
 fn void? Regex.compile_node(&self, ReNode* n)
@@ -553,6 +623,18 @@ fn void? Regex.compile_node(&self, ReNode* n)
 			self.compile_node(n.child)!;
 			self.emit(SAVE, (uint)n.group * 2 + 1);
 		case LOOK:
+			if (n.behind)
+			{
+				uint min;
+				uint max;
+				node_width(n.child, &min, &max);
+				uint look = self.emit(LOOKBEHIND, 0, max, n.negative);
+				self.code[look].z = min;
+				self.compile_node(n.child)!;
+				self.emit(LOOKEND_AT);
+				self.code[look].x = (uint)self.code.len();
+				break;
+			}
 			uint look = self.emit(LOOK, 0, 0, n.negative);
 			self.compile_node(n.child)!;
 			self.emit(LOOKEND);
@@ -722,6 +804,8 @@ struct Matcher
 	List {Backtrack} stack;
 	uint steps;
 	bool too_complex;
+	// Where the innermost running lookbehind stands: its body must end exactly here.
+	uint behind_target;
 }
 
 fn bool Matcher.same_unit(&self, uint a, uint b) @inline
@@ -823,6 +907,36 @@ fn int Matcher.run(&self, uint start_pc, uint start_sp)
 				if (self.too_complex) return -1;
 				ok = (end >= 0) != ins.flag;
 				pc = ins.x;
+			case LOOKBEHIND:
+				// Try each start the body's width allows, nearest first, for a match ending at sp.
+				uint saved = self.behind_target;
+				self.behind_target = sp;
+				bool found = false;
+				if (ins.z <= sp)
+				{
+					uint lowest = ins.y == uint::max || ins.y > sp ? 0 : sp - ins.y;
+					for (uint k = sp - ins.z; ; k--)
+					{
+						int end = self.run(pc + 1, k);
+						if (self.too_complex) return -1;
+						if (end >= 0)
+						{
+							found = true;
+							break;
+						}
+						if (k <= lowest) break;
+					}
+				}
+				self.behind_target = saved;
+				ok = found != ins.flag;
+				pc = ins.x;
+			case LOOKEND_AT:
+				if (sp == self.behind_target)
+				{
+					self.stack.size = base;
+					return (int)sp;
+				}
+				ok = false;
 			case MARK:
 				self.stack.push({ .kind = RESTORE_MARK, .pc = ins.x, .old = (int)self.marks[ins.x] });
 				self.marks[ins.x] = sp;

@@ -245,6 +245,14 @@ fn Value? native_object_get_own_property_descriptor(Vm* vm, Value this_value, Va
 		foreach (name : (String[3]){ "writable", "enumerable", "configurable" }) vm.define(d, vm.atom_value(name)!, TRUE)!;
 		return object_value(d);
 	}
+	if (o.kind == ARRAY && key == vm.atoms.length)
+	{
+		vm.define(d, vm.atoms.value, integer((int)((JsArray*)o).length))!;
+		vm.define(d, vm.atom_value("writable")!, TRUE)!;
+		vm.define(d, vm.atom_value("enumerable")!, FALSE)!;
+		vm.define(d, vm.atom_value("configurable")!, FALSE)!;
+		return object_value(d);
+	}
 	Shape* s = o.find_own(key);
 	if (!s) return UNDEFINED;
 	if (s.flags.accessor)
@@ -261,6 +269,42 @@ fn Value? native_object_get_own_property_descriptor(Vm* vm, Value this_value, Va
 	vm.define(d, vm.atom_value("enumerable")!, boolean(s.flags.enumerable))!;
 	vm.define(d, vm.atom_value("configurable")!, boolean(s.flags.configurable))!;
 	return object_value(d);
+}
+
+<*
+ Every own property's descriptor, keyed by name (symbols included).
+*>
+fn Value? native_object_get_own_property_descriptors(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	Value target = arg(args, 0);
+	if (target.is_nullish()) return vm.throw_error(TYPE_ERROR, "Cannot convert undefined or null to object")~;
+	JsObject* out = vm.heap.new_object(vm.object_proto) ?? vm.oom()~!;
+	if (!target.is_object()) return object_value(out);
+	JsObject* o = target.as_object();
+	List {Value} keys;
+	keys.init(mem);
+	defer keys.free();
+	if (o.kind == ARRAY)
+	{
+		JsArray* a = (JsArray*)o;
+		for (uint i = 0; i < a.length; i++)
+		{
+			if (a.elements[i] != EMPTY) keys.push(integer((int)i));
+		}
+		keys.push(vm.atoms.length);
+	}
+	uint n = o.shape.count;
+	Shape*[] nodes = mem::new_array(Shape*, n ? n : 1);
+	defer free(nodes);
+	o.shape.nodes(nodes);
+	foreach (node : nodes[:n]) keys.push(node.key);
+	foreach (key : keys)
+	{
+		Value[2] dargs = { target, key };
+		Value d = native_object_get_own_property_descriptor(vm, UNDEFINED, &dargs, callee)!;
+		if (!d.is_undefined()) vm.define(out, key, d)!;
+	}
+	return object_value(out);
 }
 
 fn Value? native_object_get_own_property_names(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
@@ -420,6 +464,7 @@ fn Value? native_function_to_string(Vm* vm, Value this_value, Value[] args, JsFu
 {
 	if (!this_value.is_function()) return vm.throw_error(TYPE_ERROR, "Function.prototype.toString requires that 'this' be a Function")~;
 	JsFunction* f = (JsFunction*)this_value.as_object();
+	if (f.proto && f.proto.source.len) return vm.str_value(f.proto.source);
 	@pool()
 	{
 		String name = f.native ? f.native_name : f.proto.name;
@@ -563,6 +608,21 @@ fn Value? native_array_fill(Vm* vm, Value this_value, Value[] args, JsFunction* 
 	uint start = vm.relative_index(arg(args, 1), a.length, 0)!;
 	uint end = vm.relative_index(arg(args, 2), a.length, a.length)!;
 	for (uint i = start; i < end; i++) a.elements[i] = arg(args, 0);
+	return this_value;
+}
+
+fn Value? native_array_copy_within(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	JsArray* a = vm.this_array(this_value, "copyWithin")!;
+	uint len = a.length;
+	uint to = vm.relative_index(arg(args, 0), len, 0)!;
+	uint from = vm.relative_index(arg(args, 1), len, 0)!;
+	uint end = arg(args, 2).is_undefined() ? len : vm.relative_index(args[2], len, len)!;
+	if (end > from && to < len)
+	{
+		uint count = min(end - from, len - to);
+		mem::move(a.elements + to, a.elements + from, (usz)count * Value::size);
+	}
 	return this_value;
 }
 
@@ -1042,6 +1102,7 @@ fn Value? native_string_repeat(Vm* vm, Value this_value, Value[] args, JsFunctio
 	double n = arg(args, 0).is_undefined() ? 0 : vm.to_number(args[0])!;
 	if (n < 0 || n == double::inf) return vm.throw_error(RANGE_ERROR, "Invalid count value: %s", vm.describe(args[0]))~;
 	if (n != n) n = 0;
+	if (s.len == 0) return string_value(s);
 	if (n * s.len > MAX_STRING_LENGTH) return vm.throw_error(RANGE_ERROR, "Invalid string length")~;
 	uint count = (uint)n;
 	@pool()
@@ -1404,7 +1465,7 @@ fn double xorshift(ulong* state)
 fn double js_round(double x)
 {
 	if (x != x || x == double::inf || x == -double::inf) return x;
-	if (x > -0.5 && x < 0) return -0.0;
+	if (x >= -0.5 && x < 0) return -0.0;
 	double r = math::floor(x);
 	if (x - r >= 0.5) r += 1;
 	return r;
@@ -1935,6 +1996,7 @@ fn void? Vm.init_lib(&self)
 	self.define_native(object_ctor, "defineProperties", &native_object_define_properties, 2)!;
 	self.define_native(object_ctor, "getOwnPropertyDescriptor", &native_object_get_own_property_descriptor, 2)!;
 	self.define_native(object_ctor, "getOwnPropertyNames", &native_object_get_own_property_names, 1)!;
+	self.define_native(object_ctor, "getOwnPropertyDescriptors", &native_object_get_own_property_descriptors, 1)!;
 	self.define_native(object_ctor, "create", &native_object_create, 2)!;
 	self.define_native(object_ctor, "setPrototypeOf", &native_object_set_prototype_of, 2)!;
 	self.define_native(object_ctor, "fromEntries", &native_object_from_entries, 1)!;
@@ -1961,6 +2023,7 @@ fn void? Vm.init_lib(&self)
 	self.define_native(ap, "concat", &native_array_concat, 1)!;
 	self.define_native(ap, "reverse", &native_array_reverse, 0)!;
 	self.define_native(ap, "fill", &native_array_fill, 1)!;
+	self.define_native(ap, "copyWithin", &native_array_copy_within, 2)!;
 	self.define_native(ap, "lastIndexOf", &native_array_last_index_of, 1)!;
 	self.define_native(ap, "includes", &native_array_includes, 1)!;
 	self.define_native(ap, "indexOf", &native_array_index_of_generic, 1)!;
