@@ -146,8 +146,6 @@ fn void? setup(Engine* js)
 }
 ```
 
-three.c3 uses this for its `Node` and `Asset` handles: see `src/js/bind_args.c3` there for
-`from_js`/`to_js` converters that turn a handle into an engine id and back.
 
 ## Values and the GC
 
