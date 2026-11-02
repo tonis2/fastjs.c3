@@ -1,0 +1,45 @@
+got a1
+got a2
+a return called
+a return settled
+after break
+got b1
+b return called
+b return settled
+ret
+got c1
+c return called
+c return settled
+caught boom
+bad return: TypeError Iterator result 42 is not an object
+throw wins: body
+rejected: rejected return
+throw wins 2: body2
+sync 1
+sync 2
+sync return
+{"value":1,"done":false}
+inner got A
+{"value":2,"done":false}
+inner finally
+yield* result inner-done
+{"value":10,"done":false}
+{"value":20,"done":false}
+{"value":"s1","done":false}
+{"value":"s2","done":false}
+{"value":"outer-done","done":true}
+{"done":true}
+inner finally
+{"value":"early","done":true}
+{"done":true}
+{"value":1,"done":false}
+inner caught T
+{"value":2,"done":false}
+r undefined
+{"done":true}
+closed for missing throw
+no throw: TypeError The iterator does not provide a 'throw' method.
+{"value":7,"done":true}
+h finally
+{"value":8,"done":true}
+{"value":9,"done":true}

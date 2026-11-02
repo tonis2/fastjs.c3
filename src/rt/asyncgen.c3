@@ -62,7 +62,10 @@ fn void? Vm.async_gen_drain(&self, JsCoroutine* c)
 			switch (mode)
 			{
 				case NEXT: self.async_gen_settle(c, UNDEFINED, false, true)!;
-				case RETURN: self.async_gen_settle(c, v, false, true)!;
+				case RETURN:
+					// The value is awaited first; the queue waits meanwhile.
+					self.async_gen_await_return(c, v)!;
+					return;
 				case THROW: self.async_gen_settle(c, v, true, true)!;
 			}
 			continue;
@@ -117,6 +120,57 @@ fn void? Vm.async_gen_settle(&self, JsCoroutine* c, Value v, bool rejected, bool
 		return;
 	}
 	self.resolve_promise(p, self.iter_result(v, done)!);
+}
+
+<*
+ return(v) on a finished async generator: settle the request with v once v settles.
+
+ @return? THROWN
+*>
+fn void? Vm.async_gen_await_return(&self, JsCoroutine* c, Value v)
+{
+	JsPromise*? p = self.promise_resolve(v);
+	if (catch err = p)
+	{
+		if (self.uncatchable) return err~;
+		Value reason = self.exception;
+		self.exception = UNDEFINED;
+		return self.async_gen_settle(c, reason, true, true);
+	}
+	c.awaiting = true;
+	JsFunction* fulfilled = self.new_native("", &native_async_gen_return_settled, 1)!;
+	fulfilled.native_data = object_value(c);
+	JsFunction* rejected = self.new_native("", &native_async_gen_return_settled, 1)!;
+	rejected.native_data = object_value(c);
+	rejected.magic = 1;
+	self.perform_then(p, object_value(fulfilled), object_value(rejected), UNDEFINED);
+}
+
+fn Value? native_async_gen_return_settled(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	JsCoroutine* c = (JsCoroutine*)callee.native_data.as_object();
+	c.awaiting = false;
+	vm.async_gen_settle(c, arg(args, 0), callee.magic != 0, true)!;
+	vm.async_gen_drain(c)!;
+	return UNDEFINED;
+}
+
+<*
+ Start closing a `for await` iterator (ASYNCCLOSE): out = what its return() gave, to be awaited.
+ Returns false when there is no return() to call.
+
+ @return? THROWN
+*>
+fn bool? Vm.async_iter_close(&self, Value* state, Value* out)
+{
+	Value it = state[0];
+	// Closed from here on, like iter_close: the handler around the body must not close it again.
+	state[0] = UNDEFINED;
+	if (!it.is_object()) return false;
+	Value ret = self.get(it, self.atoms.return_str)!;
+	if (ret.is_nullish()) return false;
+	*out = self.call(ret, it, {})!;
+	return true;
 }
 
 <*

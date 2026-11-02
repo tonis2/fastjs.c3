@@ -835,27 +835,67 @@ fn void? Vm.init_coroutines(&self)
 *>
 fn bool? Vm.yield_star_step(&self, Value* state)
 {
+	if (!self.yield_star_send(state, false)!) return true;
+	return self.yield_star_result(state);
+}
+
+<*
+ Call the inner iterator's next, throw or return, as the mode says: value = the call's result.
+ Returns false when a return has no return() to call; value is then what to return.
+
+ An async iterator without throw() is closed first: its return() result goes in value, to be
+ awaited, and mode becomes 3 so that yield_star_result throws the TypeError after.
+
+ @return? THROWN
+*>
+fn bool? Vm.yield_star_send(&self, Value* state, bool async)
+{
 	Value it = state[0];
 	Value[1] send = { state[2] };
-	Value result;
 	switch (state[3].as_int())
 	{
 		case 0:
-			result = self.call(state[1], it, &send)!;
+			state[2] = self.call(state[1], it, &send)!;
 		case 1:
 			Value m = self.get(it, self.atoms.throw_str)!;
-			if (m.is_nullish())
+			if (!m.is_nullish())
+			{
+				state[2] = self.call(m, it, &send)!;
+				break;
+			}
+			if (async)
+			{
+				Value ret = self.get(it, self.atoms.return_str)!;
+				if (!ret.is_nullish())
+				{
+					state[2] = self.call(ret, it, {})!;
+					state[3] = integer(3);
+					break;
+				}
+			}
+			else
 			{
 				self.iter_close(state)!;
-				return self.throw_error(TYPE_ERROR, "The iterator does not provide a 'throw' method")~;
 			}
-			result = self.call(m, it, &send)!;
+			return self.throw_error(TYPE_ERROR, "The iterator does not provide a 'throw' method.")~;
 		default:
 			Value m = self.get(it, self.atoms.return_str)!;
-			if (m.is_nullish()) return true;
-			result = self.call(m, it, &send)!;
+			if (m.is_nullish()) return false;
+			state[2] = self.call(m, it, &send)!;
 	}
+	return true;
+}
+
+<*
+ Unpack the inner iterator's result: value = its value. Returns whether it is done.
+
+ @return? THROWN
+*>
+fn bool? Vm.yield_star_result(&self, Value* state)
+{
+	Value result = state[2];
 	if (!result.is_object()) return self.throw_error(TYPE_ERROR, "Iterator result %s is not an object", self.describe(result))~;
+	if (state[3].as_int() == 3) return self.throw_error(TYPE_ERROR, "The iterator does not provide a 'throw' method.")~;
 	bool done = truthy(self.get(result, self.atoms.done)!);
 	state[2] = self.get(result, self.atoms.value)!;
 	if (done && state[3].as_int() != 2) state[3] = integer(0);

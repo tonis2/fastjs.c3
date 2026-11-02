@@ -109,6 +109,13 @@ enum Op : char
 	INITPROTO,      // AB   `__proto__: r[b]` in an object literal: r[a]'s prototype, when r[b] is an object or null
 	GETASYNCITER,   // AB   r[a], r[a+1] = the async iterator `for await` steps over r[b], and its next
 	ITERRESULT,     // A    r[a] = r[a].value, r[a+1] = r[a].done, as booleans
+	ASYNCCLOSE,     // ABC  leave a for await over iterator r[a]: r[b] = its return() result, for the AWAIT
+	                //      that follows. c = 0: skip the AWAIT and the check when there is no return();
+	                //      c = 1 (the body threw): skip the AWAIT on any error too, which is dropped;
+	                //      c = 2: the check after the AWAIT, a TypeError unless r[b] is an object
+	YSEND,          // AsBx async yield*: send r[a+2] with mode r[a+3] to iterator r[a]; r[a+2] = the
+	                //      result, for an AWAIT; jump when a return has no return() to call
+	YRESULT,        // AsBx async yield*: r[a+2] = the awaited result's value; jump when done
 
 	GETITER,        // ABC  iterate r[b]: r[a] = iterator state, r[a+1] = step state; c = 1 always makes a real iterator
 	FORNEXT,        // AsBx r[a+2] = next value, or jump when done
@@ -337,6 +344,8 @@ fn void FunctionProto.dump(&self, int depth = 0)
 			case JMPNOTUNDEF:
 			case FORNEXT:
 			case YSTEP:
+			case YSEND:
+			case YRESULT:
 				io::printf("%d %d  -> %d", ins_a(ins), ins_sbx(ins), (int)pc + 1 + ins_sbx(ins));
 			case JMP:
 				io::printf("-> %d", (int)pc + 1 + ins_sax(ins));

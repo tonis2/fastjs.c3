@@ -1069,7 +1069,16 @@ Each step is verified before the next:
     - The job queue resumes awaits through `async_gen_continue`.
     - `for await` uses GETASYNCITER, then CALL next, AWAIT, ITERRESULT. Sync iterables are
       wrapped as async-from-sync.
-    - Test: `asyncgen.js`.
+    - Leaving a `for await` early (break, return, a throw from the body) awaits `return()`'s
+      promise: ASYNCCLOSE calls it, AWAIT, then ASYNCCLOSE c=2 checks it is an object. On a
+      throw, c=1 drops errors from the call, and a one-instruction handler around the AWAIT
+      drops a rejection, so the body's exception wins.
+    - `yield*` in an async generator (`yield_star_async`): GETASYNCITER, then YSEND (the call,
+      by mode), AWAIT, YRESULT (unpack; jump when done). A missing `throw()` closes the inner
+      iterator, awaited, before the TypeError (mode 3).
+    - `return v` and `return(v)` at a yield await v; `return(v)` on a finished or unstarted
+      generator awaits v before settling (`async_gen_await_return`).
+    - Tests: `asyncgen.js`, `asyncgen2.js`, `asyncgen3.js`.
   - **Date** (`src/rt/date.c3`): constructors, UTC and local fields, setters, the V8 string
     formats, en-US locale strings, ISO and loose parsing, via libc `localtime_r`.
     - Matches node in five zones. Zone names go through an abbreviation table for the common
@@ -1085,8 +1094,7 @@ Each step is verified before the next:
       and `\uD83D\uDE00` escapes) and accept `\p{…}`/`\P{…}`.
     - Test: `unicode.js`.
 - [ ] Known gaps left:
-  - `yield*` inside async generators (a compile error)
-  - `break` out of `for await` doesn't await `return()`'s promise
+  - labelled statements (`outer: for …`, `break outer`) are a compile error
   - a computed field key is converted to a property key at each instance, not once
   - a misplaced `super` is a runtime SyntaxError, not a compile-time one
   - `/i` without `u` uses simple lower-casing rather than the spec's Canonicalize
@@ -1315,6 +1323,9 @@ See **Phases** above. Break each one down when it starts.
     of 3 runs of 660 frames, appending a system that averages `three.frame.ms.total`.
   - **Next:** time three.c3 again (QuickJS vs fastjs, median of 3) with the GPU free; then
     the known gaps above.
+- 2026-11-02: `yield*` in async generators, and `for await` awaiting `return()` when it
+  leaves early. Async generators also await returned values now. `test/js`: 36 files pass
+  (-O0, -O3, `--gc-stress`); `c3c test`: 57.
 
 **How to run things:**
 ```sh

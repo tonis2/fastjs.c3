@@ -39,6 +39,8 @@ struct JumpCtx
 	// A for-of loop: leaving it early calls the iterator's return(), whose state starts here.
 	bool closes_iterator;
 	uint iter_reg;
+	// A for await: the close awaits what return() gives.
+	bool async_close;
 }
 
 struct FuncState
@@ -1786,6 +1788,8 @@ fn void? Codegen.yield_expr(&self, Node* e, uint dest)
 	if (self.in_async_generator()) self.emit_abc(AWAIT, v);
 	self.emit_abc(YIELD, v, mode, 0);
 	uint resumed = self.emit_jump(JMPF, mode)!;
+	// return(v) on an async generator awaits v, where it would have resumed.
+	if (self.in_async_generator()) self.emit_abc(AWAIT, v);
 	self.return_out(self.fs.jumps, v)!;
 	self.patch(resumed)!;
 	if (dest != DISCARD) self.emit_abc(MOVE, dest, v);
@@ -1800,7 +1804,7 @@ fn bool Codegen.in_async_generator(&self) @inline => self.fs.info.node.flags.is_
 
 fn void? Codegen.yield_star(&self, Node* e, uint dest)
 {
-	if (self.in_async_generator()) return self.unsupported(e, "'yield*' in async generators")~;
+	if (self.in_async_generator()) return self.yield_star_async(e, dest);
 	uint saved = self.fs.free_reg;
 	uint base = self.alloc(4)!;
 	self.expr(e.a, base + 2)!;
@@ -1815,6 +1819,37 @@ fn void? Codegen.yield_star(&self, Node* e, uint dest)
 	self.jump_back(JMP, 0, top)!;
 	self.patch(done)!;
 	uint finished = self.emit_jump(JMPF, base + 3)!;
+	self.return_out(self.fs.jumps, base + 2)!;
+	self.patch(finished)!;
+	if (dest != DISCARD) self.emit_abc(MOVE, dest, base + 2);
+	self.release(saved);
+}
+
+<*
+ `yield*` in an async generator: like yield_star, over an async iterator, with each result of
+ the inner iterator awaited between sending (YSEND) and unpacking it (YRESULT). The value
+ returned through it is awaited too.
+*>
+fn void? Codegen.yield_star_async(&self, Node* e, uint dest)
+{
+	uint saved = self.fs.free_reg;
+	uint base = self.alloc(4)!;
+	self.expr(e.a, base + 2)!;
+	self.fs.line = e.line;
+	self.name_site(e.a);
+	self.emit_abc(GETASYNCITER, base, base + 2);
+	self.emit_abc(LOADUNDEF, base + 2);
+	self.emit((uint)rt::encode_asbx(LOADI, base + 3, 0));
+	uint top = self.pc();
+	uint no_return = self.emit_jump(YSEND, base)!;
+	self.emit_abc(AWAIT, base + 2);
+	uint done = self.emit_jump(YRESULT, base)!;
+	self.emit_abc(YIELD, base + 2, base + 3, 1);
+	self.jump_back(JMP, 0, top)!;
+	self.patch(no_return)!;
+	self.patch(done)!;
+	uint finished = self.emit_jump(JMPF, base + 3)!;
+	self.emit_abc(AWAIT, base + 2);
 	self.return_out(self.fs.jumps, base + 2)!;
 	self.patch(finished)!;
 	if (dest != DISCARD) self.emit_abc(MOVE, dest, base + 2);
@@ -1869,7 +1904,7 @@ fn void? Codegen.return_out(&self, JumpCtx* from, uint reg)
 {
 	for (JumpCtx* c = from; c; c = c.outer)
 	{
-		if (c.closes_iterator) self.emit_abc(ITERCLOSE, c.iter_reg);
+		if (c.closes_iterator) self.close_iterator(c)!;
 		if (c.kind != FINALLY) continue;
 		if (reg != c.cval) self.emit_abc(MOVE, c.cval, reg);
 		self.emit((uint)rt::encode_asbx(LOADI, c.ctype, 2));
@@ -1878,6 +1913,25 @@ fn void? Codegen.return_out(&self, JumpCtx* from, uint reg)
 		return;
 	}
 	self.emit_abc(RET, reg);
+}
+
+<*
+ Leave loop c's iteration early: call return(), and for a for await, await what it gives and
+ check that it is an object.
+*>
+fn void? Codegen.close_iterator(&self, JumpCtx* c)
+{
+	if (!c.async_close)
+	{
+		self.emit_abc(ITERCLOSE, c.iter_reg);
+		return;
+	}
+	uint saved = self.fs.free_reg;
+	uint t = self.alloc()!;
+	self.emit_abc(ASYNCCLOSE, c.iter_reg, t, 0);
+	self.emit_abc(AWAIT, t);
+	self.emit_abc(ASYNCCLOSE, c.iter_reg, t, 2);
+	self.release(saved);
 }
 
 fn void? Codegen.stmt_break(&self, Node* n)
@@ -1993,6 +2047,14 @@ fn void? Codegen.stmt(&self, Node* n)
 				self.emit_abc(LOADUNDEF, v);
 			}
 			self.fs.line = n.line;
+			if (self.in_async_generator())
+			{
+				// AWAIT writes its result back, and v may be a variable.
+				uint t = self.alloc()!;
+				self.emit_abc(MOVE, t, v);
+				self.emit_abc(AWAIT, t);
+				v = t;
+			}
 			self.return_out(self.fs.jumps, v)!;
 		case BREAK:
 		case CONTINUE:
@@ -2105,6 +2167,7 @@ fn void? Codegen.stmt_for_await(&self, Node* n)
 	}
 	JumpCtx* loop = self.push_jump(LOOP);
 	loop.closes_iterator = true;
+	loop.async_close = true;
 	loop.iter_reg = base;
 	self.stmt(n.d)!;
 	uint body_end = self.pc();
@@ -2114,17 +2177,17 @@ fn void? Codegen.stmt_for_await(&self, Node* n)
 	if (loop.breaks.len())
 	{
 		self.patch_all(&loop.breaks, self.pc())!;
-		self.emit_abc(ITERCLOSE, base);
-		self.patch(exit)!;
+		self.close_iterator(loop)!;
 	}
-	else
-	{
-		self.patch(exit)!;
-	}
-	// A throw from the binding or the body closes the iterator too (see stmt_for_of).
+	self.patch(exit)!;
+	// A throw from the binding or the body closes the iterator too (see stmt_for_of), and
+	// still awaits return()'s promise. The exception wins over a rejection of that promise.
 	uint over = self.emit_jump(JMP)!;
 	self.fs.handlers.push({ .start = exit + 1, .end = body_end, .handler = self.pc(), .reg = call });
-	self.emit_abc(ITERCLOSE, base, 0, 1);
+	self.emit_abc(ASYNCCLOSE, base, call + 1, 1);
+	uint wait = self.pc();
+	self.emit_abc(AWAIT, call + 1);
+	self.fs.handlers.push({ .start = wait, .end = wait + 1, .handler = self.pc(), .reg = call + 1 });
 	self.emit_abc(THROW, call);
 	self.patch(over)!;
 }

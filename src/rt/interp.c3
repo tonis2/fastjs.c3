@@ -1193,6 +1193,27 @@ fn Value? Vm.run(&self)
 				self.async_iterator_of(r[ins_b(ins)], r + a)!;
 			case ITERRESULT:
 				self.unpack_iter_result(r + a)!;
+			case ASYNCCLOSE:
+				uint b = ins_b(ins);
+				switch (ins_c(ins))
+				{
+					case 0:
+						if (!self.async_iter_close(r + a, r + b)!) pc += 2;
+					case 1:
+						// The body's exception wins over anything return() throws.
+						Value pending = self.exception;
+						bool? called = self.async_iter_close(r + a, r + b);
+						if (catch err = called)
+						{
+							if (self.uncatchable) return err~;
+							self.exception = pending;
+							pc++;
+							break;
+						}
+						if (!called) pc++;
+					default:
+						if (!r[b].is_object()) return self.throw_error(TYPE_ERROR, "Iterator result %s is not an object", self.describe(r[b]))~;
+				}
 			case INITPROTO:
 				Value proto = r[ins_b(ins)];
 				if (proto.is_object())
@@ -1326,6 +1347,10 @@ fn Value? Vm.run(&self)
 				nextcase RET;
 			case YSTEP:
 				if (self.yield_star_step(r + a)!) pc = (uint)((int)pc + ins_sbx(ins));
+			case YSEND:
+				if (!self.yield_star_send(r + a, true)!) pc = (uint)((int)pc + ins_sbx(ins));
+			case YRESULT:
+				if (self.yield_star_result(r + a)!) pc = (uint)((int)pc + ins_sbx(ins));
 		}
 	}
 }

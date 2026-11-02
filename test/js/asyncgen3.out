@@ -1,0 +1,25 @@
+value is promise: true
+{"value":"g1","done":false}
+g return
+g return settled
+gen finally
+{"value":"stop","done":true}
+pt value is promise: true pt1
+pt value is promise: true pt2
+finally sees promise: true
+{"value":3,"done":true}
+dt 1
+outer caught inner boom
+dt recovered
+nested [ 'n11', 'n21' ]
+n2 return
+n2 return settled
+n1 return
+n1 return settled
+n2 return
+n2 return settled
+n1 return
+n1 return settled
+{"value":"nested-ret","done":true}
+[ false, false, true ]
+rejected return: rej
