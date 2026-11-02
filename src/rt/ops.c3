@@ -382,6 +382,7 @@ fn void? Vm.set(&self, Value obj, Value key, Value v)
 			if (arr.frozen) return self.throw_error(TYPE_ERROR, "Cannot assign to read only property '%d' of object", key.as_int())~;
 			if (o.frozen_extensions && (uint)key.as_int() >= arr.length) return self.throw_error(TYPE_ERROR, "Cannot add property %d, object is not extensible", key.as_int())~;
 			arr.set((uint)key.as_int(), v);
+			self.heap.touch(arr);
 			return;
 		}
 		if (key == self.atoms.length)
@@ -398,6 +399,7 @@ fn void? Vm.set(&self, Value obj, Value key, Value v)
 		if (s.flags.accessor) return self.call_setter(o.slots[s.slot()], obj, key, v);
 		if (!s.flags.writable) return self.throw_error(TYPE_ERROR, "Cannot assign to read only property '%s' of object", self.key_text(key))~;
 		o.slots[s.slot()] = v;
+		self.heap.touch(o);
 		return;
 	}
 	for (JsObject* p = o.proto(); p; p = p.proto())
@@ -431,6 +433,7 @@ fn void? Vm.define(&self, JsObject* o, Value key, Value v, PropFlags flags = DAT
 	if (o.kind == ARRAY && key.is_int())
 	{
 		((JsArray*)o).set((uint)key.as_int(), v);
+		self.heap.touch(o);
 		return;
 	}
 	Shape* s = o.find_own(key);
@@ -441,6 +444,7 @@ fn void? Vm.define(&self, JsObject* o, Value key, Value v, PropFlags flags = DAT
 	}
 	if (s.flags != flags) o.reshape(&self.heap, EMPTY, key, flags) ?? self.oom()~!;
 	o.slots[o.find_own(key).slot()] = v;
+	self.heap.touch(o);
 }
 
 <*
@@ -458,6 +462,7 @@ fn void? Vm.define_accessor(&self, JsObject* o, Value key, Value getter, Value s
 		Accessor* acc = (Accessor*)o.slots[s.slot()].as_object();
 		if (!getter.is_undefined()) acc.getter = getter;
 		if (!setter.is_undefined()) acc.setter = setter;
+		self.heap.touch(acc);
 		return;
 	}
 	Accessor* acc = (Accessor*)self.heap.new_object(null, ACCESSOR, Accessor::size) ?? self.oom()~!;
@@ -637,6 +642,7 @@ fn void? Vm.set_ic(&self, JsObject* o, Value key, Value v, IcEntry* ic)
 		if (!s.flags.accessor && s.flags.writable)
 		{
 			o.slots[s.slot()] = v;
+			self.heap.touch(o);
 			*ic = { .shape = o.shape, .slot = s.slot(), .kind = OWN };
 			return;
 		}

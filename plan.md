@@ -863,7 +863,54 @@ Each step is verified before the next:
 - all 12 examples give identical screenshots and logs
 - per-frame script time (mean / worst) is compared against the phase 9 table
 
-### Milestone 14 — GC: `gc_step`, free-list allocator, incremental marking
+### Milestone 14 — GC: `gc_step`, free-list allocator, incremental marking (mostly done)
+- [x] **Incremental tri-color marking** (`src/rt/gc.c3`), on by default
+      (`FASTJS_GC_ATOMIC=1` turns it off):
+  - `maybe_gc` stays one compare. While marking, the threshold is 0, so every safe point
+    calls `gc_work`, which marks a slice of `max(8 × blocks allocated, 64)` blocks.
+  - Blocks allocated while marking start gray. The final remark rescans roots and drains.
+  - **Barrier:** `Heap.touch(block)` re-grays a block that was already marked (Steele style,
+    per object, not per field). It is called in:
+    - the interpreter's store ops: SETPROP/INITPROP cache hits, SETELEM's array path,
+      APPEND/APPENDSPREAD/ITERREST per item, the box ops, SETHOME/SETFIELDS/DEFMETHOD
+    - `JsObject.add/reshape/set_proto`, `root_shape`, and the slot and accessor writes in
+      `ops.c3`
+    - `save_frame`/`resume` (coroutines), `settle`/`perform_then` (promises), module boxes
+      at link, `set_index` in the API
+  - **Natives get no barriers.** No slice runs while one is on the C stack, so
+    `Vm.after_native` touches its `this`, arguments, callee and the callee's
+    `native_data(2)` once it returns.
+  - **Checking:** `verify_marking` runs at every remark under `--gc-stress` or
+    `FASTJS_GC_VERIFY=1`. It walks everything reachable again (flag `GC_VERIFIED`) and
+    asserts every block it reaches is marked. Stress mode alternates atomic and incremental
+    cycles. The benches pass with `FASTJS_GC_VERIFY=1 FASTJS_GC_MB=0`, hundreds of
+    collections each.
+  - **Lazy cache clearing:** after the remark, dead shapes go on `Heap.doomed` (flag
+    `GC_DOOMED`). `Vm.scan_ics` clears the caches that point at them a slice at a time, and
+    only then frees them. Scanning every cache of the prelude had been 0.28 ms of a 0.29 ms
+    remark.
+    - **Bug found by three.c3's tank_yard:** an ADD cache hit *installs* its `new_shape`, so
+      a doomed transition shape could be revived into a live object before its cache was
+      cleared, leaving it pointing at freed memory once the shape was released. The ADD
+      fast paths now refuse a doomed `new_shape` and take the slow path.
+    - `FASTJS_GC_VERIFY` also poisons doomed shapes, so a use crashes where it happens.
+  - **Sweep pacing:**
+    - `sweep_ratio` is set after each mark from the block count and the allocation
+      expected before the next threshold.
+    - A mark that is due while a sweep is unfinished waits and sweeps a slice per safe
+      point, rather than finishing the sweep in one pause. Before, the async bench's 100k
+      promise chain left 25 MB of garbage whose sweep landed in one 9 ms pause.
+  - **Results:**
+
+    | | longest pause | remark on the three.c3 prelude |
+    |---|---|---|
+    | atomic collector, async bench | 8.8 ms | 0.29 ms |
+    | incremental, async bench | 0.043 ms | 0.025–0.04 ms |
+- [x] `Context.gc_step(budget_us)` (`Vm.gc_step`): finishes the sweep and cache scan,
+      advances a mark, and starts the next mark early at 3/4 of the threshold.
+- [ ] Size-class allocator: not started. Measure first; with lazy sweeping, `free()` is no
+      longer in a pause.
+- Original plan:
 
 1. **`Context.gc_step(budget_us)`**
    - Sweeps within the budget.

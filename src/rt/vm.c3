@@ -173,6 +173,8 @@ struct Vm
 	DString* output;
 	// Values the host keeps alive (handles).
 	List {Value} roots;
+	// Functions whose inline caches still need clearing of dead shapes (see scan_ics).
+	List {FunctionProto*} ic_scan;
 	// Kinds of host objects, by id (see host.c3).
 	List {NativeClass*} native_classes;
 	// A fast host function raised an exception (see native_fast_call).
@@ -180,6 +182,10 @@ struct Vm
 	// Native functions currently on the C stack; collection waits until there are none.
 	uint native_depth;
 	usz gc_min_threshold;
+	// Mark in slices between safe points (FASTJS_GC_ATOMIC=1 turns it off).
+	bool incremental;
+	// Check every incremental mark against a full walk (FASTJS_GC_VERIFY=1, and --gc-stress).
+	bool gc_verify;
 	// Asked now and then whether to stop a long-running script (see check_interrupt).
 	InterruptHandler interrupt;
 	void* interrupt_runtime;
@@ -218,6 +224,7 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.scripts.init(mem);
 	self.roots.init(mem);
 	self.native_classes.init(mem);
+	self.ic_scan.init(mem);
 	self.owned_names.init(mem);
 	self.regex_cache.init(mem);
 	self.jobs.init(mem);
@@ -226,6 +233,8 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.heap.threshold = GC_MIN_THRESHOLD;
 	self.gc_min_threshold = GC_MIN_THRESHOLD;
 	self.gc_trace = @ok(env::tget_var("FASTJS_GC_TRACE"));
+	self.incremental = !@ok(env::tget_var("FASTJS_GC_ATOMIC"));
+	self.gc_verify = @ok(env::tget_var("FASTJS_GC_VERIFY"));
 	if (try mb = env::tget_var("FASTJS_GC_MB")) self.gc_min_threshold = (usz)(mb.to_int() ?? 4) * 1024 * 1024;
 	self.init_atoms()!;
 	self.init_builtins()!;
@@ -235,7 +244,7 @@ fn void Vm.free(&self)
 {
 	if (@ok(env::tget_var("FASTJS_GC_STATS")))
 	{
-		io::eprintfn("fastjs gc: %d collections, %.2f ms total (mark %.2f, sweep %.2f), longest %.3f ms, heap now %d KiB", self.gc_count, self.gc_total_ns / 1e6, self.gc_mark_ns / 1e6, self.gc_sweep_ns / 1e6, self.gc_max_ns / 1e6, self.heap.bytes / 1024);
+		io::eprintfn("fastjs gc: %d collections, %.2f ms total (mark %.2f, sweep %.2f), longest pause %.3f ms, heap now %d KiB", self.gc_count, self.gc_total_ns / 1e6, self.gc_mark_ns / 1e6, self.gc_sweep_ns / 1e6, self.gc_max_ns / 1e6, self.heap.bytes / 1024);
 	}
 	foreach (s : self.scripts)
 	{
@@ -272,6 +281,7 @@ fn void Vm.free(&self)
 		free(c);
 	}
 	self.native_classes.free();
+	self.ic_scan.free();
 }
 
 fn Value? Vm.atom_value(&self, String name) => string_value(self.heap.atom(name)!);
@@ -410,6 +420,7 @@ fn void? Vm.attach_stack(&self, JsObject* err, JsString* message)
 		if (existing)
 		{
 			err.slots[existing.slot()] = string_value(s);
+			self.heap.touch(err);
 			return;
 		}
 		err.add(&self.heap, self.atoms.stack, string_value(s), METHOD_PROP)!;
@@ -505,6 +516,7 @@ fn Value? Vm.call(&self, Value callee, Value this_value, Value[] args)
 		uint depth = fun.native == &native_generator_resume ? 0 : 1;
 		self.native_depth += depth;
 		defer self.native_depth -= depth;
+		defer self.after_native(this_value, args, fun);
 		return fun.native(self, this_value, args, fun);
 	}
 	if (fun.proto.is_class_constructor) return self.throw_error(TYPE_ERROR, "Class constructor %s cannot be invoked without 'new'", fun.proto.name)~;
@@ -536,6 +548,7 @@ fn Value? Vm.construct(&self, Value callee, Value[] args, Value new_target = EMP
 	{
 		self.native_depth++;
 		defer self.native_depth--;
+		defer self.after_native(EMPTY, args, fun);
 		return fun.native(self, EMPTY, args, fun);
 	}
 	if (!fun.proto.is_constructor()) return self.throw_error(TYPE_ERROR, "%s is not a constructor", self.describe(callee))~;
@@ -563,6 +576,26 @@ fn JsObject*? Vm.new_instance(&self, Value constructor)
 	Value proto = self.get(constructor, self.atoms.prototype)!;
 	JsObject* p = proto.is_object() ? proto.as_object() : self.object_proto;
 	return self.heap.new_object(p)!;
+}
+
+<*
+ The write barrier for natives, which have none of their own: no slice runs while one is on
+ the C stack, so whatever it changed among its receiver, arguments and callee (and the callee's
+ own state) is put back on the gray stack once it returns.
+*>
+fn void Vm.after_native(&self, Value this_value, Value[] args, JsFunction* callee) @inline
+{
+	if (self.heap.marking) self.touch_native_call(this_value, args, callee);
+}
+
+fn void Vm.touch_native_call(&self, Value this_value, Value[] args, JsFunction* callee)
+{
+	Heap* heap = &self.heap;
+	heap.touch_value(this_value);
+	foreach (a : args) heap.touch_value(a);
+	heap.touch(callee);
+	heap.touch_value(callee.native_data);
+	heap.touch_value(callee.native_data2);
 }
 
 <*

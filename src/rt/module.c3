@@ -224,6 +224,7 @@ fn void? Vm.link_module(&self, ModuleRecord* root)
 				foreach (j, src : proto.captures) f.captures[j] = m.function.captures[src.index];
 			}
 			m.boxes[h.cell].value = object_value(f);
+			self.heap.touch(m.boxes[h.cell]);
 		}
 	}
 }

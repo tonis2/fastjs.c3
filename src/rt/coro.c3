@@ -64,6 +64,7 @@ fn void Vm.save_frame(&self, JsCoroutine* c, Frame* f, uint pc) @inline
 {
 	mem::copy(c.regs, self.stack + f.base, (usz)c.nregs * Value::size);
 	c.pc = pc;
+	self.heap.touch(c);
 }
 
 fn void JsCoroutine.finish(&self)
@@ -105,6 +106,7 @@ fn Value? Vm.resume(&self, JsCoroutine* c, Value v, ResumeMode mode)
 		c.regs[ins_a(ins)] = v;
 		bool delegating = ins_op(ins) == YIELD && ins_c(ins) != 0;
 		if (ins_op(ins) == YIELD) c.regs[ins_b(ins)] = integer((int)mode.ordinal);
+		self.heap.touch(c);
 		throwing = mode == THROW && !delegating;
 	}
 	uint saved_top = self.stack_top;
@@ -245,6 +247,7 @@ fn void Vm.settle(&self, JsPromise* p, Value v, bool rejected)
 	if (p.state != PENDING) return;
 	p.state = rejected ? REJECTED : FULFILLED;
 	p.result = v;
+	self.heap.touch(p);
 	foreach (r : p.reactions) self.enqueue_reaction(r, v, rejected);
 	p.reactions.free();
 	if (rejected && !p.handled) self.unhandled.push(object_value(p));
@@ -301,6 +304,7 @@ fn void Vm.perform_then(&self, JsPromise* p, Value on_fulfilled, Value on_reject
 	{
 		case PENDING:
 			p.reactions.push(r);
+			self.heap.touch(p);
 		case FULFILLED:
 			self.enqueue_reaction(r, p.result, false);
 		case REJECTED:

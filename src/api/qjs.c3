@@ -429,6 +429,7 @@ fn bool Context.set_index(&self, Value array, uint index, Value value)
 	if (a.is_object() && a.as_object().kind == ARRAY && index <= (uint)int::max)
 	{
 		((JsArray*)a.as_object()).set(index, raw(value));
+		vm.heap.touch(a.as_object());
 		return true;
 	}
 	if (!a.is_object()) return false;
@@ -712,6 +713,13 @@ fn void Context.collect(&self)
 	Vm* vm = self.vm();
 	if (vm.native_depth == 0) vm.collect();
 }
+
+<*
+ fastjs only: do up to budget_us microseconds of garbage-collection work now, in time the host
+ has to spare (the idle end of a frame), so less of it lands inside scripts. Does nothing when
+ called from inside a host function.
+*>
+fn void Context.gc_step(&self, long budget_us) => self.vm().gc_step(budget_us * 1000);
 
 <*
  Install the module hooks, or clear them with null. They must outlive the engine.

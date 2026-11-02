@@ -283,11 +283,11 @@ fn void FunctionProto.clear_ics(&self)
 	foreach (p : self.protos) p.clear_ics();
 }
 
-fn bool dead_shape(Shape* s) @inline => s != null && !s.marked;
+fn bool dead_shape(Shape* s) @inline => s != null && (((GcHeader*)s).flags & GC_DOOMED);
 
 <*
- After marking: forget only the cache entries that point at shapes about to be freed, so code
- stays warm across a collection.
+ After marking: forget only this function's cache entries that point at shapes about to be
+ freed, so code stays warm across a collection. Nested functions are the caller's to visit.
 *>
 fn void FunctionProto.clear_dead_ics(&self)
 {
@@ -296,7 +296,6 @@ fn void FunctionProto.clear_dead_ics(&self)
 		if (ic.kind == EMPTY) continue;
 		if (dead_shape(ic.shape) || dead_shape(ic.holder_shape) || dead_shape(ic.new_shape)) *ic = {};
 	}
-	foreach (p : self.protos) p.clear_dead_ics();
 }
 
 <*

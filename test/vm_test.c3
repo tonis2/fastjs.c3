@@ -71,7 +71,8 @@ fn void live_data_survives_collection() @test
 		`);
 		test::eq(out, "2000999 obj1999 49 50 500");
 	};
-	test::gt(vm.gc_count, 100u);
+	// Every other collection under stress is incremental and spans several safe points.
+	test::gt(vm.gc_count, 50u);
 }
 
 fn void scripts_share_top_level_bindings() @test

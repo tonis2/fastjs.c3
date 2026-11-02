@@ -127,7 +127,11 @@ fn Shape*? Heap.root_shape(&self, JsObject* proto)
 		if (!self.null_root) self.null_root = self.new_shape(null, null, UNDEFINED, {})!;
 		return self.null_root;
 	}
-	if (!proto.child_root) proto.child_root = self.new_shape(null, proto, UNDEFINED, {})!;
+	if (!proto.child_root)
+	{
+		proto.child_root = self.new_shape(null, proto, UNDEFINED, {})!;
+		self.touch(proto);
+	}
 	return proto.child_root;
 }
 
@@ -252,6 +256,7 @@ fn void? JsObject.add(&self, Heap* heap, Value key, Value value, PropFlags flags
 	self.ensure_slots(next.count);
 	self.slots[next.count - 1] = value;
 	self.shape = next;
+	heap.touch(self);
 }
 
 <*
@@ -280,6 +285,7 @@ fn void? JsObject.reshape(&self, Heap* heap, Value drop, Value change = EMPTY, P
 		self.slots[out++] = values[i];
 	}
 	self.shape = s;
+	heap.touch(self);
 }
 
 <*
@@ -307,6 +313,7 @@ fn void? JsObject.set_proto(&self, Heap* heap, JsObject* proto)
 	if (self.shape.count == 0)
 	{
 		self.shape = heap.root_shape(proto)!;
+		heap.touch(self);
 		return;
 	}
 	self.reshape(heap, EMPTY, EMPTY, {}, proto)!;

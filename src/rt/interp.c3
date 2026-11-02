@@ -379,8 +379,11 @@ fn Value? Vm.run(&self)
 				Box* box = f.function.captures[ins_b(ins)];
 				if (box.value == UNINITIALIZED) return self.throw_error(REFERENCE_ERROR, "Cannot access a variable before initialization")~;
 				box.value = r[a];
+				self.heap.touch(box);
 			case INITCAP:
-				f.function.captures[ins_b(ins)].value = r[a];
+				Box* box = f.function.captures[ins_b(ins)];
+				box.value = r[a];
+				self.heap.touch(box);
 			case NEWBOX:
 				self.maybe_gc();
 				Box* box = self.heap.alloc(BOX, Box::size) ?? self.oom()~!;
@@ -394,8 +397,11 @@ fn Value? Vm.run(&self)
 				Box* box = (Box*)r[ins_b(ins)].as_pointer();
 				if (box.value == UNINITIALIZED) return self.throw_error(REFERENCE_ERROR, "Cannot access a variable before initialization")~;
 				box.value = r[a];
+				self.heap.touch(box);
 			case INITBOX:
-				((Box*)r[ins_b(ins)].as_pointer()).value = r[a];
+				Box* box = (Box*)r[ins_b(ins)].as_pointer();
+				box.value = r[a];
+				self.heap.touch(box);
 			case CHECKTDZ:
 				if (r[a] == UNINITIALIZED) return self.tdz_error(k[ins_bx(ins)])~;
 			case THROWCONST:
@@ -785,14 +791,18 @@ fn Value? Vm.run(&self)
 					{
 						assert(ic.slot < o.slot_cap, "IC slot past capacity");
 						o.slots[ic.slot] = v;
+						self.heap.touch(o);
 						continue;
 					}
 					JsObject* proto = o.shape.proto;
-					if (ic.kind == ADD && !o.frozen_extensions && (!proto || proto.shape == ic.holder_shape))
+					// A doomed new_shape (dead at the last mark, its cache not yet cleared) must not
+					// be brought back to life by installing it; the slow path makes a fresh one.
+					if (ic.kind == ADD && !o.frozen_extensions && (!proto || proto.shape == ic.holder_shape) && !dead_shape(ic.new_shape))
 					{
 						o.ensure_slots(ic.new_shape.count);
 						o.slots[ic.slot] = v;
 						o.shape = ic.new_shape;
+						self.heap.touch(o);
 						continue;
 					}
 				}
@@ -830,6 +840,7 @@ fn Value? Vm.run(&self)
 					if (o.kind == ARRAY && !o.frozen_extensions)
 					{
 						((JsArray*)o).set((uint)key.as_int(), r[ins_c(ins)]);
+						self.heap.touch(o);
 						break;
 					}
 					if (o.kind == TYPED_ARRAY)
@@ -868,7 +879,9 @@ fn Value? Vm.run(&self)
 				self.maybe_gc();
 				r[a] = object_value(self.heap.new_array(self.array_proto, ins_b(ins)) ?? self.oom()~!);
 			case APPEND:
-				((JsArray*)r[a].as_object()).push(r[ins_b(ins)]);
+				JsArray* dest = (JsArray*)r[a].as_object();
+				dest.push(r[ins_b(ins)]);
+				self.heap.touch(dest);
 			case APPENDHOLE:
 				((JsArray*)r[a].as_object()).push(EMPTY);
 			case APPENDSPREAD:
@@ -876,15 +889,21 @@ fn Value? Vm.run(&self)
 				Value[2] state;
 				self.get_iterator(r[ins_b(ins)], &state)!;
 				Value item;
-				while (self.iter_next(&state, &item)!) dest.push(item);
+				// Per item: stepping a generator can run a GC slice between two pushes.
+				while (self.iter_next(&state, &item)!)
+				{
+					dest.push(item);
+					self.heap.touch(dest);
+				}
 			case INITPROP:
 				JsObject* o = r[a].as_object();
 				IcEntry* ic = &f.proto.ics[pc - 1];
-				if (ic.shape == o.shape && ic.kind == ADD)
+				if (ic.shape == o.shape && ic.kind == ADD && !dead_shape(ic.new_shape))
 				{
 					o.ensure_slots(ic.new_shape.count);
 					o.slots[ic.slot] = r[ins_c(ins)];
 					o.shape = ic.new_shape;
+					self.heap.touch(o);
 					continue;
 				}
 				self.define_ic(o, k[ins_b(ins)], r[ins_c(ins)], ic)!;
@@ -957,6 +976,7 @@ fn Value? Vm.run(&self)
 					self.native_depth += depth;
 					Value? result = fun.native(self, this_value, r[a + 2:argc], fun);
 					self.native_depth -= depth;
+					self.after_native(this_value, r[a + 2:argc], fun);
 					r[a] = result!;
 					self.stack_top = f.base + f.proto.nregs;
 					break;
@@ -1012,6 +1032,7 @@ fn Value? Vm.run(&self)
 				Value key = self.to_key(r[ins_b(ins)])!;
 				Value fun = r[ins_c(ins)];
 				((JsFunction*)fun.as_object()).home_object = target;
+				self.heap.touch_value(fun);
 				switch (ins_op(ins))
 				{
 					case DEFMETHOD: self.define(target, key, fun, METHOD_PROP)!;
@@ -1020,8 +1041,10 @@ fn Value? Vm.run(&self)
 				}
 			case SETHOME:
 				((JsFunction*)r[a].as_object()).home_object = r[ins_b(ins)].as_object();
+				self.heap.touch_value(r[a]);
 			case SETFIELDS:
 				((JsFunction*)r[a].as_object()).fields_init = r[ins_b(ins)];
+				self.heap.touch_value(r[a]);
 			case GETFIELDS:
 				r[a] = f.function.fields_init;
 			case SUPERCALL:
@@ -1042,6 +1065,7 @@ fn Value? Vm.run(&self)
 					self.native_depth++;
 					Value? native_result = pf.native(self, EMPTY, r[a + 2:argc], pf);
 					self.native_depth--;
+					self.after_native(EMPTY, r[a + 2:argc], pf);
 					Value result = native_result!;
 					self.stack_top = f.base + f.proto.nregs;
 					// A built-in parent made the object; give it the subclass's prototype.
@@ -1113,7 +1137,11 @@ fn Value? Vm.run(&self)
 				Value item;
 				if (!r[a].is_undefined())
 				{
-					while (self.iter_next(r + a, &item)!) rest.push(item);
+					while (self.iter_next(r + a, &item)!)
+					{
+						rest.push(item);
+						self.heap.touch(rest);
+					}
 				}
 				r[a] = UNDEFINED;
 			case FORINKEYS:

@@ -16,6 +16,11 @@ struct Heap
 	GcHeader** sweep_link;
 	// Blocks allocated since the sweep last ran: sweeping is paid for by allocating.
 	uint sweep_credit;
+	// Blocks swept per block allocated: set after each mark so the sweep is done before the
+	// next mark has to start, which would otherwise finish it in one pause.
+	uint sweep_ratio;
+	// Blocks on the heap, shapes included.
+	usz blocks;
 	// Everything the engine owns: GC blocks plus the memory they own outside themselves (slots,
 	// elements, tables, buffer data). See extra_size.
 	usz bytes;
@@ -28,6 +33,16 @@ struct Heap
 	// What the last collection found live, and whether that alone was at the limit.
 	usz live;
 	bool at_limit;
+	// Incremental marking is in progress: allocations start gray, and stores into marked blocks
+	// put them back on the gray stack (see gc.c3).
+	bool marking;
+	// The memory limit asked for a whole collection at the next safe point.
+	bool urgent;
+	MarkStack gray;
+	usz marked_live;
+	// Shapes the last mark found dead, kept until no inline cache can point at them any more
+	// (the cache scan is lazy, like the sweep; see Vm.scan_ics).
+	GcHeader* doomed;
 	// Poison freed blocks (under --gc-stress), so a use after free crashes where it happens.
 	bool poison;
 	usz freed;
@@ -43,8 +58,9 @@ struct Heap
 *>
 fn void Heap.init(&self, usz limit = 0)
 {
-	*self = { .limit = limit };
+	*self = { .limit = limit, .sweep_ratio = 2 };
 	self.atoms = mem::new_array(JsString*, 256);
+	self.gray.stack.init(mem, 256);
 }
 
 <*
@@ -53,7 +69,7 @@ fn void Heap.init(&self, usz limit = 0)
 fn void Heap.free(&self)
 {
 	growth = 0;
-	foreach (list : (GcHeader*[3]){ self.all, self.shapes, self.unswept })
+	foreach (list : (GcHeader*[4]){ self.all, self.shapes, self.unswept, self.doomed })
 	{
 		GcHeader* h = list;
 		while (h)
@@ -65,6 +81,7 @@ fn void Heap.free(&self)
 		}
 	}
 	free(self.atoms);
+	self.gray.stack.free();
 	*self = {};
 }
 
@@ -112,7 +129,14 @@ fn void*? Heap.alloc(&self, HeapKind kind, usz size)
 		self.all = h;
 	}
 	self.bytes += size;
+	self.blocks++;
 	self.sweep_credit++;
+	if (self.marking)
+	{
+		h.marked = true;
+		h.flags = GC_GRAY;
+		self.gray.stack.push(h);
+	}
 	return h;
 }
 
@@ -167,6 +191,7 @@ fn JsString*? Heap.atom(&self, String name)
 fn void Heap.release_block(&self, GcHeader* h)
 {
 	self.bytes -= h.size + extra_size(h);
+	self.blocks--;
 	finalize(h);
 	if (self.poison) mem::set(h, 0xEE, h.size);
 	free(h);
@@ -197,6 +222,7 @@ fn bool Heap.sweep_step(&self, uint budget = SWEEP_SLICE)
 		if (h.marked || (h.kind == STRING && ((JsString*)h).atom))
 		{
 			h.marked = false;
+			h.flags = 0;
 			link = &h.next;
 			continue;
 		}
@@ -229,9 +255,35 @@ fn void? Heap.make_room(&self, usz size)
 	{
 		// Whatever the script drops while handling the error is collected at the next safe point.
 		self.threshold = 0;
+		self.urgent = true;
 		return OUT_OF_MEMORY~;
 	}
 	// After a collection that found the heap full, only ask again once enough was allocated
 	// since for it to have a chance; asking at every allocation would collect at every one.
-	if (!self.at_limit || self.bytes - self.live >= self.limit / 16) self.threshold = 0;
+	if (!self.at_limit || self.bytes - self.live >= self.limit / 16)
+	{
+		self.threshold = 0;
+		self.urgent = true;
+	}
+}
+
+<*
+ The write barrier: block p was just changed. While marking, a block that was already marked
+ goes back on the gray stack, so what was stored into it gets traced.
+*>
+fn void Heap.touch(&self, void* p) @inline
+{
+	if (self.marking && p) self.regray(p);
+}
+
+fn void Heap.touch_value(&self, Value v) @inline
+{
+	if (self.marking && v.is_heap()) self.regray(v.as_pointer());
+}
+
+fn void Heap.regray(&self, GcHeader* h)
+{
+	if (!h.marked || (h.flags & GC_GRAY)) return;
+	h.flags |= GC_GRAY;
+	self.gray.stack.push(h);
 }

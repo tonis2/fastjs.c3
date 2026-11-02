@@ -465,3 +465,24 @@ fn void test_promise_state_and_async_eval() @test
 	defer free(syntax);
 	assert(syntax.contains("bad.js:1:"), "got %s", syntax);
 }
+
+fn void test_gc_step() @test
+{
+	Context js = qjs::open()!!;
+	defer js.close();
+	Value keep = js.eval("globalThis.keep = []; for (let i = 0; i < 3000; i++) keep.push({ i, s: 'k' + i }); keep")!!;
+	defer js.release(keep);
+	// Garbage up to near the threshold, then let idle-time steps do the collecting.
+	for (int frame = 0; frame < 40; frame++)
+	{
+		js.eval("for (let i = 0; i < 2000; i++) ({ junk: [i, i] })")!!;
+		js.gc_step(2000);
+	}
+	test::eq(js.length(keep), 3000);
+	Value last = js.eval("keep[2999].s")!!;
+	defer js.release(last);
+	String text = js.text(last);
+	defer free(text);
+	test::eq(text, "k2999");
+	assert(js.vm().gc_count > 0, "gc_step never collected");
+}
