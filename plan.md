@@ -883,7 +883,7 @@ Each step is verified before the next:
 - all 12 examples give identical screenshots and logs
 - per-frame script time (mean / worst) is compared against the phase 9 table
 
-### Milestone 14 — GC: `gc_step`, free-list allocator, incremental marking (mostly done)
+### Milestone 14 — GC: `gc_step`, free-list allocator, incremental marking (mostly done; one open item)
 - [x] **Incremental tri-color marking** (`src/rt/gc.c3`), on by default
       (`FASTJS_GC_ATOMIC=1` turns it off):
   - `maybe_gc` stays one compare. While marking, the threshold is 0, so every safe point
@@ -981,6 +981,33 @@ Each step is verified before the next:
      - A lint script (in `test/js/run.sh`) rejects raw `.slots[..] =`, `.elements[..] =` or
        box `.value =` stores outside the helpers.
    - **Target:** no GC pause over 0.5 ms in any three.c3 example (`FASTJS_GC_TRACE`).
+- [ ] **village_walk's worst frame (found 2026-11-02, timings in the log).**
+  - **Measurements:**
+    - fastjs's worst frame is 0.27–0.60 ms (median 0.40), and it changes from run to run.
+    - QuickJS's is 0.14–0.15 ms on the same script.
+    - The mean is 1.4× better on fastjs, so the problem is one spike, not steady cost.
+  - **It is not a collection pause.**
+    - With `FASTJS_GC_TRACE=1 FASTJS_GC_STATS=1`, 660 frames run 79 collections: 9.6 ms
+      total (mark 8.4, sweep 1.1).
+    - The longest pause is 0.025 ms, and each remark takes ~0.017 ms.
+    - three.c3's `gc_step(200 µs)` and `prune_handles` (every 64 frames) run after the frame,
+      outside `three.frame.ms.total`.
+  - **Suspects, in order:**
+    1. **Allocation churn inside the frame.** That is 3.6 MB of garbage every ~8 frames,
+       paid for in allocation-driven mark and sweep slices (`maybe_gc`). Several slices can
+       stack in one frame.
+    2. **A new 64 KiB page** being calloc'd, or a large block, on a frame that needs one.
+    3. **A host call** in village_walk that sometimes does real work. Compare against
+       QuickJS, whose worst frame stays flat.
+    4. **OS scheduling noise.** Unlikely, because QuickJS doesn't show it.
+  - **To do:**
+    - Record which frame is the worst, and what it spent the time on: per-frame counters
+      for slice count and ns, page allocations, and `three.frame.ms` split by span.
+    - Find where the 3.6 MB per cycle comes from. Is it the prelude or the example, and
+      could it be pooled? Then check whether a larger minimum threshold
+      (`FASTJS_GC_MB`) or doing more of the work in `gc_step` flattens the spike.
+  - **Done when:** village_walk's worst frame is ≤ QuickJS's across 3 runs, and no other
+    example's worst frame gets worse.
 
 ### Milestone 15 — Speed (in progress)
 - [x] **String append buffers** (`string.c3`):
@@ -1522,7 +1549,7 @@ c3c build lexcheck && T=../three.c3 && ./build/lexcheck $T/examples/*.js $T/src/
     0.302 → 0.118).
   - The decorator rewrites cost nothing measurable.
   - storage_images is unchanged; its frame time is not JS.
-  - village_walk's worst frame is still the GC mark (0.3–0.6 ms, varying between runs), where
-    QuickJS's is 0.15.
-  - **Next:** village_walk's worst frame (does `gc_step` in idle time hide it?), then the known
-    gaps.
+  - village_walk's worst frame is 0.3–0.6 ms, varying between runs, where QuickJS's is 0.15.
+    A GC trace shows it is not a collection pause (the longest is 0.025 ms). It is an open item
+    under Milestone 14.
+  - **Next:** village_walk's worst frame (Milestone 14), then the known gaps.
