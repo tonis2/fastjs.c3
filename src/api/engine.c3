@@ -77,6 +77,8 @@ struct Engine
 	// Distinct for every engine this process starts, so caches of keys can tell
 	// a new engine at an old address from the one they were made for.
 	uint id;
+	// The embedder's own pointer, for converters that only get the engine.
+	void* user;
 }
 
 uint next_engine_id @local;
