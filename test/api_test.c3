@@ -129,6 +129,24 @@ fn Value? Vec2.to_js(&self, Engine* js) => js.numbers({ self.x, self.y });
 
 fn Vec2 swap(Vec2 v) => { v.y, v.x };
 
+struct Inner
+{
+	double best_time;
+	float[<2>] at;
+}
+
+struct Report
+{
+	bool running;
+	int frame_count;
+	String label;
+	Inner inner_part;
+}
+
+fn Report report(int n) => { true, n, "go", { 1.5, { 3, 4 } } };
+
+fn float dot3(float[<3>] a, float[<3>] b, double scale) => (float)((double)(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) * scale);
+
 fn void test_typed_functions() @test
 {
 	Engine* js = js::open()!!;
@@ -147,6 +165,8 @@ fn void test_typed_functions() @test
 	js.@bind(g, "first", &first)!!;
 	js.@bind(g, "many", &many)!!;
 	js.@bind(g, "swap", &swap)!!;
+	js.@bind(g, "dot3", &dot3)!!;
+	js.@bind(g, "report", &report)!!;
 
 	Value r = js.eval("let s = 0; for (let i = 0; i < 100; i++) s = add(s, i); s")!!;
 	test::eq(js.number(r)!!, 4950.0);
@@ -165,6 +185,8 @@ fn void test_typed_functions() @test
 	test::eq(text_of(js, "first('same') + (first() === undefined)"), "sametrue");
 	test::eq(text_of(js, "many(1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2)"), "2001");
 	test::eq(text_of(js, "swap({ x: 1, y: 2 }).join()"), "2,1");
+	test::eq(text_of(js, "[dot3(1, 2, 3, 4, 5, 6, 2), dot3.length, dot3(1, 1, 1)].join()"), "64,7,0");
+	test::eq(text_of(js, "JSON.stringify(report(7))"), `{"running":true,"frameCount":7,"label":"go","innerPart":{"bestTime":1.5,"at":[3,4]}}`);
 	test::eq(text_of(js, "(() => { try { swap(3) } catch (e) { return e.message } })()"), "swap: argument 1 must be an {x, y}, not 3");
 	// A failing conversion throws what the argument's own valueOf threw.
 	test::eq(text_of(js, "(() => { try { add({ valueOf() { throw new RangeError('no') } }) } catch (e) { return e.constructor.name } })()"), "RangeError");

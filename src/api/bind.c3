@@ -17,11 +17,14 @@
  | `Value` | v itself |
  | `float[]` `double[]` `int[]` `uint[]` `short[]` `ushort[]` | a typed array of that element type, read in place; missing is empty |
  | `char[]` | the bytes of any typed array, DataView or ArrayBuffer |
+ | `float[<N>]`, `double[<N>]`, … | N consecutive numbers |
  | `Opt {T}` | a T, and whether it was given at all (undefined counts as not given) |
  | any `T` with `fn void? T.from_js(&self, Call* c, int at)` | whatever that method reads |
 
  The result converts the same way back: nothing for `void`, a number, a boolean, a string,
- a `Value` as is, or `fn Value? T.to_js(&self, Engine* js)`. An optional result that is empty
+ a `Value` as is, `fn Value? T.to_js(&self, Engine* js)` when the type has it, a vector as an
+ array, and any other struct as an object whose keys are its fields in camelCase
+ (`dropped_steps` is `droppedSteps`), converted the same way. An optional result that is empty
  must have thrown already: `return c.fail("…")~` or `js.fail("…")~`, or a converter did.
 
  `@method` is the same for a host class: its first converted parameter reads `this`, and the
@@ -148,6 +151,32 @@ macro read_arg(Call* c, int at, $Type)
 		$case $Type == short[]: r = c.@elements(at, INT16, short, "an Int16Array");
 		$case $Type == ushort[]: r = c.@elements(at, UINT16, ushort, "a Uint16Array");
 		$case $Type == char[]: r = c.bytes_of(at);
+		$case $Type::kind == VECTOR:
+			// A vector reads that many consecutive numbers: float[<3>] is x, y, z.
+			$Type v;
+			fault failed;
+			$for var $i = 0; $i < $Type::len; $i++:
+				if (!failed)
+				{
+					double? d = c.number(at + $i);
+					if (catch e = d)
+					{
+						failed = e;
+					}
+					else
+					{
+						v[$i] = ($Typefrom($Type::inner))d;
+					}
+				}
+			$endfor
+			if (failed)
+			{
+				r = failed~;
+			}
+			else
+			{
+				r = v;
+			}
 		$default:
 			$Type out;
 			$if $defined(out.from_js(c, at)):
@@ -179,6 +208,13 @@ macro Value? to_value(Engine* js, result)
 		$case $Typeof(result) == String: return js.string(result);
 		$case types::is_int($Typeof(result)) ||| types::is_float($Typeof(result)): return rt::number((double)result);
 		$case $defined(result.to_js(js)): return result.to_js(js);
+		$case $Typeof(result)::kind == VECTOR:
+			Value array = js.array($Typeof(result)::len)!;
+			$for var $i = 0; $i < $Typeof(result)::len; $i++:
+				js.push(array, rt::number((double)result[$i]));
+			$endfor
+			return array;
+		$case $Typeof(result)::kind == STRUCT: return js.@object_of(result);
 		$default: $error "This result type has no conversion to JS: give it `fn Value? T.to_js(&self, Engine* js)`";
 	$endswitch
 }
@@ -209,8 +245,20 @@ macro @invoke($func, $Host, $at, Call* c, ...) @local
 			$case $Host != void* &&& $params[$vaarg.len].type == $Host::typeid:
 				return @invoke($func, $Host, $at, c, ...$vaarg, ($Host)c.host);
 			$default:
-				return @invoke($func, $Host, $at + 1, c, ...$vaarg, read_arg(c, $at, $Typefrom($params[$vaarg.len].type))!);
+				return @invoke($func, $Host, $at + (int)@js_width($params[$vaarg.len].type), c, ...$vaarg, read_arg(c, $at, $Typefrom($params[$vaarg.len].type))!);
 		$endswitch
+	$endif
+}
+
+<*
+ How many JS arguments a parameter of type $t reads: a vector reads one per element.
+*>
+macro int @js_width(typeid $t) @const
+{
+	$if $t.kind == VECTOR:
+		return $t.len;
+	$else
+		return 1;
 	$endif
 }
 
@@ -243,7 +291,7 @@ macro uint @arity($func, $Host, int $first) @const
 	var $n = 0;
 	$foreach $p : $Typeof($func)::params:
 		$if !($p.type == Call*::typeid ||| $p.type == Engine*::typeid ||| ($Host != void* &&& $p.type == $Host::typeid)):
-			$n = $n + 1;
+			$n = $n + @js_width($p.type);
 		$endif
 	$endforeach
 	return $first < 0 ? $n - 1 : $n;
@@ -337,4 +385,50 @@ macro void? Engine.@getter(&self, NativeClass* cls, String name, $func, host = n
 	Value f = self.native(@glue($func, $Typeof(host), -1), name, 0, (void*)host)!;
 	Key k = self.key(name)!;
 	if (catch self.vm.define_accessor(cls.proto, (Value)k, f, UNDEFINED, { .configurable = true })) return THREW~;
+}
+
+<*
+ A struct as a JS object: each field under its name in camelCase, converted as a result is.
+ The keys are made once per engine.
+
+ @return? THREW
+*>
+macro Value? Engine.@object_of(&self, value)
+{
+	var $members = $Typeof(value)::members;
+	static Key[$members.len] keys;
+	static uint keyed;
+	if (keyed != self.id)
+	{
+		$foreach $i, $m : $members:
+			keys[$i] = self.key(camel_case($m.name))!;
+		$endforeach
+		keyed = self.id;
+	}
+	Value obj = self.object()!;
+	$foreach $i, $m : $members:
+		self.set(obj, keys[$i], to_value(self, value.$m)!)!;
+	$endforeach
+	return obj;
+}
+
+<*
+ snake_case as camelCase, in temp memory: "dropped_steps" is "droppedSteps".
+*>
+fn String camel_case(String name)
+{
+	DString out;
+	out.tinit(name.len);
+	bool up;
+	foreach (ch : name)
+	{
+		if (ch == '_')
+		{
+			up = out.len() > 0;
+			continue;
+		}
+		out.append_char(up ? ch.to_upper() : ch);
+		up = false;
+	}
+	return out.str_view();
 }

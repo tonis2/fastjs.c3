@@ -74,7 +74,12 @@ const Root NO_ROOT = (Root)0;
 struct Engine
 {
 	inline Vm vm;
+	// Distinct for every engine this process starts, so caches of keys can tell
+	// a new engine at an old address from the one they were made for.
+	uint id;
 }
+
+uint next_engine_id @local;
 
 <*
  @param [&out] self : "The engine to start"
@@ -85,6 +90,7 @@ fn void? Engine.init(&self, usz memory_limit = 0)
 {
 	if (catch self.vm.init(memory_limit)) return NO_ENGINE~;
 	self.vm.exception = rt::EMPTY;
+	self.id = ++next_engine_id;
 }
 
 <*
