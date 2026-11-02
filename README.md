@@ -9,9 +9,6 @@ literals, Map/Set, typed arrays, JSON, a RegExp subset), and leaves out the part
 an engine slow: `var`, `eval`, `with`, `arguments`, sloppy mode, holes in arrays, BigInt,
 WeakMap. Everything is strict mode. `plan.md` lists exactly what is in and out.
 
-In three.c3's examples it runs frames 1.4–3.9× faster than QuickJS, and a C3↔JS call costs
-much less.
-
 ## Install
 
 Add it to your project as a C3 library. The usual way is a git submodule under `lib/`:
