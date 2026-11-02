@@ -1,17 +1,44 @@
 // Run a script:   fjs file.js
 // Show bytecode:  fjs --dump file.js
 // GC torture:     fjs --gc-stress file.js   (collects at every safe point)
+// Modules:       fjs file.mjs, or fjs --module file.js   (imports resolve relative to the importer)
 module fjs;
 import std::io, std::core::dstring, fastjs::rt, fastjs::compile;
 
+char[] module_buffer;
+
+fn char* load_from_disk(ZString name, usz* len, void* opaque)
+{
+	char[]? data = file::load(mem, name.str_view());
+	if (catch data) return null;
+	if (module_buffer.len) free(module_buffer);
+	module_buffer = data;
+	*len = data.len;
+	return data.ptr;
+}
+
 fn int main(String[] args)
 {
-	bool dump = args.len > 1 && args[1] == "--dump";
-	bool stress = args.len > 1 && args[1] == "--gc-stress";
-	String[] files = dump || stress ? args[2..] : args[1..];
+	bool dump;
+	bool stress;
+	bool as_module;
+	usz first = 1;
+	for (; first < args.len && args[first].starts_with("--"); first++)
+	{
+		switch (args[first])
+		{
+			case "--dump": dump = true;
+			case "--gc-stress": stress = true;
+			case "--module": as_module = true;
+			default:
+				io::eprintfn("fjs: unknown option %s", args[first]);
+				return 2;
+		}
+	}
+	String[] files = args[first..];
 	if (files.len == 0)
 	{
-		io::eprintn("usage: fjs [--dump] <file.js>...");
+		io::eprintn("usage: fjs [--dump] [--gc-stress] [--module] <file.js>...");
 		return 2;
 	}
 	Vm vm;
@@ -35,6 +62,11 @@ fn int main(String[] args)
 			return 1;
 		}
 		defer free(data);
+		if (as_module || path.ends_with(".mjs"))
+		{
+			if (!run_module(&vm, (String)data, path)) return 1;
+			continue;
+		}
 		CompileError err;
 		Script*? script = compile::compile_script(&vm, (String)data, path, &err);
 		if (catch script)
@@ -52,25 +84,48 @@ fn int main(String[] args)
 			report(&vm, "Uncaught ", vm.exception);
 			return 1;
 		}
-		// Then the microtasks, as node runs them after the script.
-		while (true)
-		{
-			bool? more = vm.run_job();
-			if (catch more)
-			{
-				report(&vm, "Uncaught ", vm.exception);
-				return 1;
-			}
-			if (!more) break;
-		}
-		Value reason;
-		if (vm.take_unhandled(&reason))
-		{
-			report(&vm, "Uncaught (in promise) ", reason);
-			return 1;
-		}
+		if (!drain(&vm)) return 1;
 	}
+	if (module_buffer.len) free(module_buffer);
 	return 0;
+}
+
+fn bool run_module(Vm* vm, String source, String path)
+{
+	ModuleHooks hooks = { .load = &load_from_disk };
+	vm.module_hooks = &hooks;
+	defer vm.module_hooks = null;
+	Value? promise = compile::eval_module(vm, source, path);
+	if (catch promise)
+	{
+		report(vm, "Uncaught ", vm.exception);
+		return false;
+	}
+	return drain(vm);
+}
+
+<*
+ Run the microtasks, as node does after the script, then report a rejection nobody handled.
+*>
+fn bool drain(Vm* vm)
+{
+	while (true)
+	{
+		bool? more = vm.run_job();
+		if (catch more)
+		{
+			report(vm, "Uncaught ", vm.exception);
+			return false;
+		}
+		if (!more) break;
+	}
+	Value reason;
+	if (vm.take_unhandled(&reason))
+	{
+		report(vm, "Uncaught (in promise) ", reason);
+		return false;
+	}
+	return true;
 }
 
 fn void report(Vm* vm, String prefix, Value error)

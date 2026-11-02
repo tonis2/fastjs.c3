@@ -51,6 +51,8 @@ enum ObjectKind : char
 	REGEXP,
 	COROUTINE,
 	PROMISE,
+	// A JsTypedArray of bytes with no indexed elements, read through get/set methods.
+	DATA_VIEW,
 }
 
 struct JsObject

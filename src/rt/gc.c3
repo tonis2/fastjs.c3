@@ -54,10 +54,21 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 		mark_ptr(stack, f.coroutine);
 	}
 	mark_ptr(stack, self.generator_proto);
+	mark_ptr(stack, self.data_view_proto);
 	mark_ptr(stack, self.promise_proto);
 	for (sz i = self.job_head; i < self.jobs.len(); i++) mark_job(stack, &self.jobs[i]);
 	mark_job(stack, &self.current_job);
 	foreach (v : self.unhandled) mark_value(stack, v);
+	foreach (m : self.modules)
+	{
+		if (m.boxes)
+		{
+			for (usz i = 0; i < m.cells.len; i++) mark_ptr(stack, m.boxes[i]);
+		}
+		mark_ptr(stack, m.function);
+		mark_value(stack, m.namespace);
+		mark_value(stack, m.promise);
+	}
 	mark_value(stack, self.exception);
 	mark_ptr(stack, self.global);
 	mark_ptr(stack, self.object_proto);
@@ -134,6 +145,7 @@ fn void trace(MarkStack* stack, GcHeader* h)
 				case ITERATOR:
 					mark_value(stack, ((JsIterator*)o).target);
 				case TYPED_ARRAY:
+				case DATA_VIEW:
 					mark_ptr(stack, ((JsTypedArray*)o).buffer);
 				case REGEXP:
 					mark_value(stack, ((JsRegExp*)o).source);
@@ -221,6 +233,7 @@ fn void Vm.collect(&self)
 		freed++;
 	}
 	foreach (script : self.scripts) script.main.clear_ics();
+	foreach (m : self.modules) m.main.clear_ics();
 	if (self.gc_stress) self.verify_heap();
 	self.gc_count++;
 	self.gc_freed += freed;

@@ -8,6 +8,9 @@ const uint STACK_SIZE = 256 * 1024;
 const uint MAX_FRAMES = 8 * 1024;
 
 alias NativeFn = fn Value?(Vm* vm, Value this_value, Value[] args, JsFunction* callee);
+// Returns non-zero to stop the running script.
+alias InterruptHandler = fn int(void* runtime, void* opaque);
+const uint INTERRUPT_INTERVAL = 10000;
 
 <*
  A captured variable: closures share the box, not the value.
@@ -38,6 +41,9 @@ struct JsFunction
 	// Per-native state, e.g. a bound function's target and arguments.
 	Value native_data;
 	Value native_data2;
+	// Functions the embedding host registered: its callback and the pointer handed back to it.
+	void* host_fn;
+	void* host_opaque;
 }
 
 struct Frame
@@ -133,6 +139,7 @@ struct Vm
 	JsObject* array_buffer_proto;
 	JsObject* regexp_proto;
 	JsObject*[TypedKind::len] typed_protos;
+	JsObject* data_view_proto;
 	JsObject* generator_proto;
 	JsObject* promise_proto;
 	// Promise jobs, oldest first from job_head; the running one is kept in current_job.
@@ -141,6 +148,9 @@ struct Vm
 	Job current_job;
 	// Rejected promises nobody has subscribed to yet.
 	List {Value} unhandled;
+	// Every module loaded, by resolved name, and how imports are resolved and loaded.
+	List {ModuleRecord*} modules;
+	ModuleHooks* module_hooks;
 	Value sym_iterator;
 	Value sym_async_iterator;
 	ulong random_state;
@@ -161,6 +171,13 @@ struct Vm
 	// Native functions currently on the C stack; collection waits until there are none.
 	uint native_depth;
 	usz gc_threshold;
+	// Asked now and then whether to stop a long-running script (see check_interrupt).
+	InterruptHandler interrupt;
+	void* interrupt_runtime;
+	void* interrupt_opaque;
+	uint interrupt_countdown;
+	// The pending exception can't be caught by script code (an interrupt).
+	bool uncatchable;
 	// Collect at every safe point, to flush out rooting bugs.
 	bool gc_stress;
 	usz gc_count;
@@ -188,6 +205,7 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.regex_cache.init(mem);
 	self.jobs.init(mem);
 	self.unhandled.init(mem);
+	self.modules.init(mem);
 	self.gc_threshold = GC_MIN_THRESHOLD;
 	self.init_atoms()!;
 	self.init_builtins()!;
@@ -215,6 +233,8 @@ fn void Vm.free(&self)
 	self.regex_cache.free();
 	self.jobs.free();
 	self.unhandled.free();
+	foreach (m : self.modules) m.free();
+	self.modules.free();
 	self.slots.free();
 	self.slot_names.free();
 	self.slot_const.free();

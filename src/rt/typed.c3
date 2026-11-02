@@ -21,6 +21,8 @@ struct JsArrayBuffer
 	usz byte_length;
 	// Memory the host owns (a view onto C3 data); never freed by the GC.
 	bool external;
+	// Scripts may read but not write it (Context.freeze).
+	bool immutable;
 }
 
 struct JsTypedArray
@@ -280,6 +282,7 @@ fn Value? native_typed_slice(Vm* vm, Value this_value, Value[] args, JsFunction*
 fn Value? native_typed_set(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
 	JsTypedArray* t = vm.this_typed(this_value, "set")!;
+	if (t.buffer.immutable) return vm.throw_error(TYPE_ERROR, "ArrayBuffer is immutable")~;
 	Value src = arg(args, 0);
 	double off = arg(args, 1).is_undefined() ? 0 : vm.to_number(args[1])!;
 	if (off < 0) return vm.throw_error(RANGE_ERROR, "offset is out of bounds")~;
@@ -317,6 +320,7 @@ fn Value? native_typed_set(Vm* vm, Value this_value, Value[] args, JsFunction* c
 fn Value? native_typed_fill(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
 	JsTypedArray* t = vm.this_typed(this_value, "fill")!;
+	if (t.buffer.immutable) return vm.throw_error(TYPE_ERROR, "ArrayBuffer is immutable")~;
 	double v = vm.to_number(arg(args, 0))!;
 	uint start = vm.relative_index(arg(args, 1), t.length, 0)!;
 	uint end = vm.relative_index(arg(args, 2), t.length, t.length)!;
@@ -350,6 +354,105 @@ fn Value? native_typed_map(Vm* vm, Value this_value, Value[] args, JsFunction* c
 	for (uint i = 0; i < kept.length; i++) out.set_number(i, vm.to_number(kept.elements[i])!);
 	return object_value(out);
 }
+
+<*
+ Detach a buffer: it and every view of it become empty, so nothing reads the memory afterwards.
+ Views cache their data pointer, so they are found by walking the heap; detaching is rare.
+*>
+fn void Vm.detach_buffer(&self, JsArrayBuffer* b)
+{
+	if (!b.external && b.data)
+	{
+		free(b.data);
+		self.heap.bytes -= b.byte_length;
+	}
+	b.data = null;
+	b.byte_length = 0;
+	b.external = true;
+	for (GcHeader* h = self.heap.all; h; h = h.next)
+	{
+		if (h.kind != OBJECT) continue;
+		JsObject* o = (JsObject*)h;
+		if (o.kind != TYPED_ARRAY && o.kind != DATA_VIEW) continue;
+		JsTypedArray* t = (JsTypedArray*)o;
+		if (t.buffer != b) continue;
+		t.data = null;
+		t.length = 0;
+		t.byte_offset = 0;
+	}
+}
+
+// ---- DataView ----
+
+fn Value? native_data_view(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	if (this_value != EMPTY) return vm.throw_error(TYPE_ERROR, "Constructor DataView requires 'new'")~;
+	Value b = arg(args, 0);
+	if (!b.is_object() || b.as_object().kind != ARRAY_BUFFER) return vm.throw_error(TYPE_ERROR, "First argument to DataView constructor must be an ArrayBuffer")~;
+	JsArrayBuffer* buffer = (JsArrayBuffer*)b.as_object();
+	double offset = arg(args, 1).is_undefined() ? 0 : vm.to_number(arg(args, 1))!;
+	if (offset != offset) offset = 0;
+	if (offset < 0 || offset > (double)buffer.byte_length) return vm.throw_error(RANGE_ERROR, "Start offset %s is outside the bounds of the buffer", offset)~;
+	double length = arg(args, 2).is_undefined() ? (double)buffer.byte_length - offset : vm.to_number(arg(args, 2))!;
+	if (length < 0 || offset + length > (double)buffer.byte_length) return vm.throw_error(RANGE_ERROR, "Invalid DataView length %s", length)~;
+	JsTypedArray* view = (JsTypedArray*)vm.heap.new_object(vm.data_view_proto, DATA_VIEW, JsTypedArray::size) ?? vm.oom()~!;
+	view.buffer = buffer;
+	view.byte_offset = (uint)offset;
+	view.data = buffer.data + view.byte_offset;
+	view.length = (uint)length;
+	view.tkind = UINT8;
+	return object_value(view);
+}
+
+fn JsTypedArray*? Vm.this_data_view(&self, Value v)
+{
+	if (v.is_object() && v.as_object().kind == DATA_VIEW) return (JsTypedArray*)v.as_object();
+	return self.throw_error(TYPE_ERROR, "Receiver is not a DataView")~;
+}
+
+<*
+ The bytes of one element at byte offset `at`, in host (little-endian) order.
+
+ @return? THROWN
+*>
+fn char*? Vm.data_view_slot(&self, JsTypedArray* view, Value at, TypedKind kind)
+{
+	double offset = self.to_number(at)!;
+	if (offset != offset) offset = 0;
+	if (offset < 0 || offset + kind.size > (double)view.length) return self.throw_error(RANGE_ERROR, "Offset is outside the bounds of the DataView")~;
+	return view.data + (usz)offset;
+}
+
+// getInt8 ... getFloat64; magic is the TypedKind.
+fn Value? native_data_view_get(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	JsTypedArray* view = vm.this_data_view(this_value)!;
+	TypedKind kind = TypedKind::from_ordinal(callee.magic);
+	char* p = vm.data_view_slot(view, arg(args, 0), kind)!;
+	char[8] bytes;
+	bool little = truthy(arg(args, 1));
+	for (uint i = 0; i < kind.size; i++) bytes[i] = little ? p[i] : p[kind.size - 1 - i];
+	JsTypedArray tmp = { .data = &bytes, .length = 1, .tkind = kind };
+	return tmp.get(0);
+}
+
+fn Value? native_data_view_set(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
+{
+	JsTypedArray* view = vm.this_data_view(this_value)!;
+	TypedKind kind = TypedKind::from_ordinal(callee.magic);
+	char* p = vm.data_view_slot(view, arg(args, 0), kind)!;
+	double d = vm.to_number(arg(args, 1))!;
+	char[8] bytes;
+	JsTypedArray tmp = { .data = &bytes, .length = 1, .tkind = kind };
+	tmp.set_number(0, d);
+	bool little = truthy(arg(args, 2));
+	for (uint i = 0; i < kind.size; i++) p[i] = little ? bytes[i] : bytes[kind.size - 1 - i];
+	return UNDEFINED;
+}
+
+fn Value? native_data_view_buffer(Vm* vm, Value this_value, Value[] args, JsFunction* callee) => object_value(vm.this_data_view(this_value)!.buffer);
+fn Value? native_data_view_byte_length(Vm* vm, Value this_value, Value[] args, JsFunction* callee) => integer((int)vm.this_data_view(this_value)!.length);
+fn Value? native_data_view_byte_offset(Vm* vm, Value this_value, Value[] args, JsFunction* callee) => integer((int)vm.this_data_view(this_value)!.byte_offset);
 
 fn void? Vm.init_typed_arrays(&self)
 {
@@ -392,5 +495,24 @@ fn void? Vm.init_typed_arrays(&self)
 		ctor.magic = (int)kind.ordinal;
 		ctor.add(&self.heap, self.atom_value("BYTES_PER_ELEMENT")!, integer((int)kind.size), {})!;
 		proto.add(&self.heap, self.atom_value("BYTES_PER_ELEMENT")!, integer((int)kind.size), {})!;
+	}
+
+	self.data_view_proto = self.heap.new_object(self.object_proto)!;
+	self.define_constructor("DataView", &native_data_view, 1, self.data_view_proto)!;
+	self.define_getter(self.data_view_proto, "buffer", &native_data_view_buffer)!;
+	self.define_getter(self.data_view_proto, "byteLength", &native_data_view_byte_length)!;
+	self.define_getter(self.data_view_proto, "byteOffset", &native_data_view_byte_offset)!;
+	foreach (kind : TypedKind::values)
+	{
+		if (kind == UINT8_CLAMPED) continue;
+		String type = kind.name[:kind.name.len - 5];
+		JsFunction* getter = self.new_native(string::format(mem, "get%s", type), &native_data_view_get, 1)!;
+		JsFunction* setter = self.new_native(string::format(mem, "set%s", type), &native_data_view_set, 2)!;
+		self.owned_names.push(getter.native_name);
+		self.owned_names.push(setter.native_name);
+		getter.magic = (int)kind.ordinal;
+		setter.magic = (int)kind.ordinal;
+		self.data_view_proto.add(&self.heap, self.atom_value(getter.native_name)!, object_value(getter), METHOD_PROP)!;
+		self.data_view_proto.add(&self.heap, self.atom_value(setter.native_name)!, object_value(setter), METHOD_PROP)!;
 	}
 }

@@ -166,7 +166,7 @@ fn void modules() @test
 	check("export { a, b as c };", "export {a, b as c};", true);
 	check("const x = await f();", "const x = (await f());", true);
 	check_error("import a from 'b';", "'import' is only allowed at the top level of a module");
-	check_error("export * from 'b';", "'export *' is not supported", true);
+	check_error("export * as ns from 'b';", "'export * as name' is not supported", true);
 }
 
 fn void dropped_features() @test

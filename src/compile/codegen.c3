@@ -434,7 +434,13 @@ fn FunctionProto* Codegen.end_function(&self, FuncState* fs, Node* node, String 
 	}
 	CaptureSource[] captures = mem::new_array(CaptureSource, fs.info.captures.len());
 	FuncState* parent = fs.parent;
-	foreach (i, b : fs.info.captures)
+	// A module function's captures are its module's boxes, wired up when it is linked.
+	if (!parent)
+	{
+		free(captures);
+		captures = {};
+	}
+	foreach (i, b : parent ? fs.info.captures.array_view() : {})
 	{
 		if (b.func == parent.info)
 		{
@@ -559,6 +565,38 @@ fn FunctionProto*? Codegen.compile_function(&self, Node* node, String name)
 }
 
 <*
+ Compile a module body into an async function with no parameters. Its top-level function
+ declarations are compiled as nested protos and listed in `hoisted`, for the linker to create.
+*>
+fn FunctionProto*? Codegen.compile_module(&self, Node* program, List {HoistedFunction}* hoisted)
+{
+	FuncInfo* info = program.sema;
+	FuncState fs;
+	self.begin_function(&fs, info);
+	defer (catch err)
+	{
+		self.fs = fs.parent;
+		fs.free_parts();
+	}
+	fs.free_reg = 1;
+	fs.max_reg = 1;
+	self.emit_abc(ASYNCSTART, 0);
+	foreach (i, b : info.captures)
+	{
+		if (b.kind != FUNCTION) continue;
+		FunctionProto* p = self.compile_function(b.decl, b.name)!;
+		fs.protos.push(p);
+		hoisted.push({ .proto = (uint)fs.protos.len() - 1, .cell = (uint)i });
+	}
+	foreach (s : program.list) self.stmt(s)!;
+	self.emit_abc(RETUNDEF, 0);
+	Node fake = { .kind = FUNCTION, .flags = { .is_async = true } };
+	FunctionProto* p = self.end_function(&fs, &fake, "<module>", 0, false);
+	p.line = 1;
+	return p;
+}
+
+<*
  Compile a whole script into its top-level function.
 *>
 fn FunctionProto*? Codegen.compile_program(&self, Node* program)
@@ -574,8 +612,27 @@ fn FunctionProto*? Codegen.compile_program(&self, Node* program)
 	fs.free_reg = 1;
 	fs.max_reg = 1;
 	self.enter_scope(info.scope)!;
-	foreach (s : program.list) self.stmt(s)!;
-	self.emit_abc(RETUNDEF, 0);
+	// A script's value is its last expression statement's, what eval hands back:
+	// `(async () => { ... })()` gives the host its promise.
+	usz n = program.list.len;
+	bool ends_in_expression = n > 0 && program.list[n - 1].kind == EXPR_STMT;
+	foreach (i, s : program.list)
+	{
+		if (ends_in_expression && (usz)i == n - 1) break;
+		self.stmt(s)!;
+	}
+	if (ends_in_expression)
+	{
+		Node* last = program.list[n - 1];
+		self.fs.line = last.line;
+		uint r = self.alloc()!;
+		self.expr(last.a, r)!;
+		self.emit_abc(RET, r);
+	}
+	else
+	{
+		self.emit_abc(RETUNDEF, 0);
+	}
 	FunctionProto* p = mem::new(FunctionProto);
 	p.name = "<script>".copy(mem);
 	p.source_name = self.source_name;
@@ -1693,9 +1750,21 @@ fn void? Codegen.stmt(&self, Node* n)
 		case SWITCH:
 			self.stmt_switch(n)!;
 		case IMPORT:
+			// Bound when the module was linked.
+			break;
 		case EXPORT:
+			if (n.a) self.stmt(n.a)!;
 		case EXPORT_DEFAULT:
-			return self.unsupported(n, "modules")~;
+			Node* d = n.a;
+			if (d.flags.declaration)
+			{
+				// A function is hoisted; a class is a declaration like any other.
+				if (d.kind == CLASS) self.stmt(d)!;
+				break;
+			}
+			uint t = self.alloc()!;
+			self.expr_named(d, t, "default")!;
+			self.store_binding_value(n.sema, t)!;
 		default:
 			return self.fail(n, string::bformat(&self.error_buf, "unexpected %s in a statement", n.kind.text))~;
 	}

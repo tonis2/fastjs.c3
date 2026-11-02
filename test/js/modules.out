@@ -1,0 +1,12 @@
+math evaluated
+cycle_b evaluated, calls A
+cycle_a evaluated a-B
+tla start
+tla end
+6.2832 not exported 10
+live binding 0 1 1 2 2 2
+[ 'PI2', 'Vec', 'bump', 'counter', 'default', 'revealed' ] function true
+own a-B A late value { kind: 'object default', n: 42 }
+TypeError Assignment to constant variable.
+undefined
+after await

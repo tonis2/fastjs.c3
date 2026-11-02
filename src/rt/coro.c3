@@ -601,13 +601,23 @@ const uint COMBINE_PROMISE = 2;
 
 fn Value? native_promise_combine(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
-	Combinator kind = Combinator::from_ordinal(callee.magic);
+	return object_value(vm.combine(Combinator::from_ordinal(callee.magic), arg(args, 0))!);
+}
+
+<*
+ Promise.all, allSettled, any or race over an iterable.
+
+ @return? THROWN
+*>
+fn JsPromise*? Vm.combine(&self, Combinator kind, Value iterable)
+{
+	Vm* vm = self;
 	JsPromise* result = vm.new_promise()!;
-	JsArray*? items = vm.iterable_to_array(arg(args, 0));
+	JsArray*? items = vm.iterable_to_array(iterable);
 	if (catch items)
 	{
 		vm.reject_with_exception(result);
-		return object_value(result);
+		return result;
 	}
 	Value resolve;
 	Value reject;
@@ -646,7 +656,7 @@ fn Value? native_promise_combine(Vm* vm, Value this_value, Value[] args, JsFunct
 		}
 	}
 	if (items.length == 0 && kind != RACE) vm.combine_finished(shared, kind)!;
-	return object_value(result);
+	return result;
 }
 
 fn void? Vm.combine_finished(&self, JsArray* shared, Combinator kind)

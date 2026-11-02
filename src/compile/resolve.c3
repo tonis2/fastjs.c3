@@ -32,6 +32,9 @@ struct Binding
 	bool declared;
 	// Some read needs a TDZ check, so the register must start out uninitialized.
 	bool tdz_used;
+	// Modules: an imported name, and the IMPORT_SPEC it came from.
+	Node* import_spec;
+	Node* import_from;
 }
 
 struct Scope
@@ -296,6 +299,54 @@ fn void? Resolver.resolve_program(&self, Node* program)
 	foreach (s : program.list) self.visit(s)!;
 }
 
+<*
+ Resolve a module. Its top-level bindings, imports included, live in a scope of their own above
+ the module function, so every use of one (even from the module's own top level) is a capture.
+ At link time those captures become boxes the module record owns, which is how imports see an
+ exporter's bindings live, cycles included.
+
+ @return? COMPILE_ERROR
+*>
+fn void? Resolver.resolve_module(&self, Node* program)
+{
+	FuncInfo* env = alloc::new(self.arena, FuncInfo);
+	env.node = program;
+	env.captures.init(self.arena);
+	self.func = env;
+	env.scope = self.push_scope();
+	foreach (s : program.list)
+	{
+		if (s.kind != IMPORT) continue;
+		foreach (spec : s.list)
+		{
+			Binding* b = self.declare(spec.b.name, CONST, spec.b)!;
+			b.declared = true;
+			b.import_spec = spec;
+			b.import_from = s;
+			spec.b.sema = b;
+		}
+	}
+	self.hoist(program.list)!;
+	foreach (s : program.list)
+	{
+		// `export default <expression>` stores into a hidden binding.
+		if (s.kind == EXPORT_DEFAULT && !s.a.flags.declaration) s.sema = self.declare("*default*", CONST, s)!;
+	}
+	FuncInfo* info = alloc::new(self.arena, FuncInfo);
+	info.parent = env;
+	info.node = program;
+	info.captures.init(self.arena);
+	program.sema = info;
+	foreach (b : env.scope.bindings)
+	{
+		b.captured = true;
+		info.captures.push(b);
+	}
+	self.func = info;
+	info.scope = self.push_scope();
+	foreach (s : program.list) self.visit(s)!;
+}
+
 fn void? Resolver.visit_function(&self, Node* fn_node)
 {
 	FuncInfo* info = alloc::new(self.arena, FuncInfo);
@@ -461,16 +512,27 @@ fn void? Resolver.visit(&self, Node* n)
 			self.visit(n.a)!;
 			if (n.flags.computed) self.visit(n.b)!;
 		case IMPORT:
+			// Its bindings were declared with the module's scope.
+			break;
 		case EXPORT_SPEC:
 		case IMPORT_SPEC:
-			return self.fail(n, "modules are not supported yet")~;
+			return self.fail(n, "unexpected module syntax")~;
 		case EXPORT:
 			if (n.a)
 			{
 				self.visit(n.a)!;
 				return;
 			}
-			return self.fail(n, "modules are not supported yet")~;
+			// export { a as b }: a must be a module-level binding of this module.
+			if (n.name.len) return;
+			foreach (spec : n.list)
+			{
+				Binding* b = self.lookup(spec.a.name);
+				if (!b) return self.fail(spec, string::bformat(&self.error_buf, "Export '%s' is not defined in module", spec.a.name))~;
+				spec.a.sema = b;
+			}
+		case EXPORT_DEFAULT:
+			self.visit(n.a)!;
 		default:
 			self.visit(n.a)!;
 			self.visit(n.b)!;

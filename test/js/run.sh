@@ -4,8 +4,8 @@
 cd "$(dirname "$0")/../.."
 pass=0
 fail=0
-for f in test/js/*.js; do
-	expected="${f%.js}.out"
+for f in test/js/*.js test/js/*.mjs; do
+	expected="${f%.*}.out"
 	actual=$(./build/fjs $FJS_FLAGS "$f" 2>&1)
 	if [ "$actual" == "$(cat "$expected")" ]; then
 		pass=$((pass + 1))

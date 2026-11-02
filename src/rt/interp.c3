@@ -49,7 +49,7 @@ fn Unwind Vm.unwind(&self, Value* result)
 		uint pc = f.pc - 1;
 		foreach (h : f.proto.handlers)
 		{
-			if (pc >= h.start && pc < h.end)
+			if (pc >= h.start && pc < h.end && !self.uncatchable)
 			{
 				self.stack[f.base + h.reg] = self.exception;
 				f.pc = h.handler;
@@ -208,6 +208,22 @@ fn uint? Vm.unpack_spread(&self, Value* r, uint base, uint a)
 	for (uint i = 0; i < argc; i++) tmp[i] = list.elements[i] == EMPTY ? UNDEFINED : list.elements[i];
 	for (uint i = 0; i < argc; i++) r[a + 2 + i] = tmp[i];
 	return argc;
+}
+
+<*
+ Every INTERRUPT_INTERVAL backward jumps and calls, ask the host whether to stop. Stopping throws
+ an error no try/catch in the script can catch.
+
+ @return? THROWN
+*>
+fn void? Vm.check_interrupt(&self)
+{
+	if (--self.interrupt_countdown > 0) return;
+	self.interrupt_countdown = INTERRUPT_INTERVAL;
+	if (!self.interrupt(self.interrupt_runtime, self.interrupt_opaque)) return;
+	(void)self.throw_error(ERROR, "interrupted");
+	self.uncatchable = true;
+	return THROWN~;
 }
 
 fn fault Vm.no_super_error(&self)
@@ -687,6 +703,7 @@ fn Value? Vm.run(&self)
 			case JMP:
 				pc = (uint)((int)pc + ins_sax(ins));
 				self.maybe_gc();
+				if (self.interrupt && ins_sax(ins) < 0) self.check_interrupt()!;
 			case JMPF:
 				if (!truthy(r[a])) pc = (uint)((int)pc + ins_sbx(ins));
 			case JMPT:
@@ -818,7 +835,7 @@ fn Value? Vm.run(&self)
 						JsTypedArray* t = (JsTypedArray*)o;
 						uint i = (uint)key.as_int();
 						Value v = r[ins_c(ins)];
-						if (i < t.length)
+						if (i < t.length && !t.buffer.immutable)
 						{
 							if (v.is_int())
 							{
@@ -915,6 +932,7 @@ fn Value? Vm.run(&self)
 			case CALLSPREAD:
 			case NEWSPREAD:
 				self.maybe_gc();
+				if (self.interrupt) self.check_interrupt()!;
 				Op op = ins_op(ins);
 				bool spread = op == CALLSPREAD || op == NEWSPREAD;
 				bool construct = op == NEW || op == NEWSPREAD;

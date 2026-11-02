@@ -530,6 +530,72 @@ the scanned range when the callee returned. The GC then set mark bits in freed m
 - Perf idea: resume generators inside the interpreter loop (FORNEXT pushes the frame, YIELD
   returns like RET) instead of a nested `execute()` per step.
 
+### Phase 8: modules and the embedding API (mostly done)
+- [x] **ES modules.** Files:
+  - `src/rt/module.c3`: records, linking, evaluation
+  - `src/compile/module.c3`: compiling a module and loading its graph
+  - `Resolver.resolve_module`, `Codegen.compile_module`
+- [x] How modules compile:
+  - Every top-level binding of a module, imports included, lives in a scope above the module
+    function, so every use of one is a capture.
+  - Linking gives each module a box per binding. An import *is* the exporter's box, so bindings
+    are live and import cycles link fine. (The prelude has three cycles:
+    asset↔layers↔api, scene↔physics.)
+  - Hoisted function declarations are compiled as nested protos (`ModuleRecord.hoisted`) and
+    created at link time, before any body runs. A cycle can therefore call them early, as in
+    the spec.
+  - The module body is an async function, so top-level await works.
+  - `evaluate_module` runs imports depth-first and skips modules still on the evaluation stack
+    (cycles). A module waits on imports that are still awaiting at top level
+    (`Vm.combine(ALL, …)`).
+  - Without TLA, the evaluation promise comes back already settled.
+- [x] Supported forms:
+  - imports: named, `as`, default, `* as ns` (a namespace with live getters), side-effect
+  - exports: declarations, `export {a as b}`, `export default` expressions, functions and
+    classes, `export {x} from`, `export * from`
+  - Not supported: `export * as ns`.
+- [x] Loading:
+  - Through `ModuleHooks` (normalize, load), the same shape as quickjs.c3's.
+  - Without a normalize hook, a specifier is a path relative to the importer.
+  - Hook failures give "cannot import 'x' from 'y'"; a missing export gives V8's "does not
+    provide an export named".
+- [x] `fjs file.mjs` / `fjs --module file.js`. `test/js/modules.mjs` (with `test/js/mod/`) matches
+      node on cycles, TLA, live bindings, namespaces and re-exports.
+- [x] **The whole three.c3 prelude (25 modules) evaluates.**
+  - Test setup: host verbs stubbed by a generated `host_stub.js`; the files were copied to the
+    scratchpad and math.js was changed to import the stub.
+  - The `three` object has the same 153 members node sees.
+  - It needed `DataView`, now in `typed.c3`.
+- [x] **`src/api/qjs.c3`, module `fastjs::qjs`:** the quickjs.c3 API call for call, so three.c3
+      switches by changing `import qjs;` to `import fastjs::qjs;`.
+  - `qjs::Value` is a distinct `ulong` typedef over the NaN-boxed value, whose `tag()` answers
+    in quickjs's tag numbering.
+  - An owned value is an entry in `Vm.roots`, which `release` removes (searching from the end;
+    releases are mostly LIFO). Non-heap values cost nothing.
+  - Ownership-taking calls (`set_property`, `set_index`, `accessor`, a host function's `out`)
+    drop the host's root.
+  - Host functions run through `host_trampoline`, with `JsFunction.host_fn` and `host_opaque`.
+    They receive their arguments as a pointer straight into the VM stack, with no copy.
+  - `raise` returns the `EXCEPTION` marker. `exception()` gives "Name: message\n    at …"
+    without repeating the header.
+  - `eval(EVAL_GLOBAL)` returns the script's last expression statement, so the async IIFE
+    wrapper hands back its promise.
+  - `on_interrupt`: polled every 10k backward jumps or calls; it throws an uncatchable
+    "interrupted" error (`Vm.uncatchable` makes unwind skip handlers).
+  - Also implemented:
+    - `buffer` (external memory)
+    - `detach`: walks the heap to empty the views
+    - `freeze`: `JsArrayBuffer.immutable`, checked by SETELEM, `set` and `fill`
+  - `src/api/modules.c3` is quickjs.c3's `ModuleLoader`, ported unchanged (`faultdef` →
+    `excuse`).
+  - `test/api_test.c3`: 8 tests using the API the way three.c3 does (host functions, raise,
+    async IIFE with job draining, handles across GC, typed arrays, interrupt, embedded modules).
+- [ ] Not done:
+  - the new API (atoms, native classes with opaque data, `keys`, `view`, promise state, typed
+    fast host calls, `gc_step`)
+  - an incremental GC
+  - the memory limit is only what `Heap.init` already enforces
+
 ### Status of three.c3 scripts (compile only, `fjs --dump`)
 - All 12 examples compile (2026-11-02).
 - The prelude needs ES modules (phase 8).
@@ -629,11 +695,20 @@ See **Phases** above. Break each one down when it starts.
   - **Next:** phase 8. ES modules for the prelude, then the qjs-compatible API (`src/api.c3`),
     then switching three.c3 over.
 
+- 2026-11-02: Phase 8 core done: ES modules and the qjs-compatible API.
+  - `test/js/run.sh`: 18 files pass (normal and `--gc-stress`). `c3c test`: 51 pass.
+  - The three.c3 prelude evaluates as modules, also under `--gc-stress`.
+  - **Next:**
+    - phase 9: build three.c3 against fastjs (swap `import qjs`) and run its examples headless
+    - then the new API, and V8-style "x.y is not a function" messages, which three.c3's agent
+      workflow benefits from
+
 **How to run things:**
 ```sh
 c3c build fjs && test/js/run.sh                      # differential tests against node's output
 test/js/regen.sh                                    # after adding a test: regenerate .out files with node
 ./build/fjs --dump file.js                          # see the bytecode
+./build/fjs --module main.js                        # run as an ES module (.mjs files always are)
 c3c build fjs -O3 --safe=no && bench/run.sh         # benchmarks vs QuickJS (build bench/qjsrun first)
 ```
 

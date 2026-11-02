@@ -230,18 +230,16 @@ fn void Printer.statement_inline(&self, Node* n)
 				self.statement_inline(n.a);
 				return;
 			}
-			self.put("{");
-			foreach (i, spec : n.list)
+			if (n.flags.delegate)
 			{
-				if (i > 0) self.put(", ");
-				self.put(spec.a.name);
-				if (spec.name != spec.a.name)
-				{
-					self.put(" as ");
-					self.put(spec.name);
-				}
+				self.put("*");
 			}
-			self.put("}");
+			else
+			{
+				self.put("{");
+				self.export_specs(n);
+				self.put("}");
+			}
 			if (n.name.len)
 			{
 				self.put(" from \"");
@@ -681,5 +679,19 @@ fn void Printer.expr(&self, Node* n)
 			self.put("/* unexpected ");
 			self.put(n.kind.text);
 			self.put(" */");
+	}
+}
+
+fn void Printer.export_specs(&self, Node* n)
+{
+	foreach (i, spec : n.list)
+	{
+		if (i > 0) self.put(", ");
+		self.put(spec.a.name);
+		if (spec.name != spec.a.name)
+		{
+			self.put(" as ");
+			self.put(spec.name);
+		}
 	}
 }

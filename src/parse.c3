@@ -584,7 +584,13 @@ fn Node*? Parser.parse_export(&self)
 	switch
 	{
 		case at.kind == STAR:
-			return self.fail("'export *' is not supported")~;
+			// export * from 'x': re-export everything x exports except its default.
+			self.advance()!;
+			if (self.at_word("as")) return self.fail("'export * as name' is not supported")~;
+			self.expect_word("from")!;
+			n.name = self.module_specifier()!.name;
+			n.flags.delegate = true;
+			self.consume_semicolon()!;
 		case at.kind == LBRACE:
 			self.advance()!;
 			sz m = self.scratch.len();
