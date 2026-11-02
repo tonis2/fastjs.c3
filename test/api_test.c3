@@ -1,5 +1,5 @@
 module api_test;
-import std::io, fastjs::qjs;
+import std::io, std::math, fastjs::qjs;
 
 // The qjs-compatible embedding API, used the way three.c3 uses quickjs.c3.
 
@@ -243,4 +243,225 @@ fn void test_memory_limit() @test
 	String message = js.exception();
 	defer free(message);
 	assert(message.starts_with("RangeError"), "got %s", message);
+}
+
+fn double hypot2(void* opaque, double* args, int argc) => math::sqrt(args[0] * args[0] + args[1] * args[1]);
+
+fn double count_call(void* opaque, double* args, int argc)
+{
+	*(int*)opaque += argc;
+	return 0;
+}
+
+fn double is_positive(void* opaque, double* args, int argc) => args[0] > 0 ? 1 : 0;
+
+fn double refuse(void* opaque, double* args, int argc)
+{
+	Context js = qjs::wrap(opaque);
+	js.raise("refused");
+	return 0;
+}
+
+fn void test_number_functions() @test
+{
+	Context js = qjs::open()!!;
+	defer js.close();
+	int counted;
+	Value global = js.global();
+	defer js.release(global);
+	js.set_property(global, "hyp", js.number_function(&hypot2, "hyp", 2));
+	js.set_property(global, "count", js.number_function(&count_call, "count", 0, &counted, UNDEFINED));
+	js.set_property(global, "positive", js.number_function(&is_positive, "positive", 1, null, BOOL));
+	js.set_property(global, "refuse", js.number_function(&refuse, "refuse", 0, js.ctx));
+	Value r = js.eval("[hyp(3, 4), hyp('6', { valueOf() { return 8 } }), Number.isNaN(hyp(3)), count(1, 2, 3), positive(2), positive(-1), hyp.name, hyp.length].join()")!!;
+	defer js.release(r);
+	String text = js.text(r);
+	defer free(text);
+	test::eq(text, "5,10,true,,true,false,hyp,2");
+	test::eq(counted, 3);
+	Value caught = js.eval("(() => { try { refuse(); return 'no' } catch (e) { return e.message } })()")!!;
+	defer js.release(caught);
+	String message = js.text(caught);
+	defer free(message);
+	test::eq(message, "refused");
+	// A raise in a fast function doesn't leak into the next call.
+	Value ok = js.eval("hyp(0, 1)")!!;
+	test::eq(js.number(ok), 1.0);
+	Value sum = js.eval("let s = 0; for (let i = 0; i < 1000; i++) s += hyp(i, 0); s")!!;
+	test::eq(js.number(sum), 499500.0);
+}
+
+struct Point
+{
+	double x;
+	double y;
+}
+
+fn double point_length(void* opaque, void* self_data, double* args, int argc)
+{
+	Point* p = self_data;
+	return math::sqrt(p.x * p.x + p.y * p.y);
+}
+
+fn double point_scale(void* opaque, void* self_data, double* args, int argc)
+{
+	Point* p = self_data;
+	p.x *= args[0];
+	p.y *= args[0];
+	return 0;
+}
+
+fn void free_point(void* data, void* opaque)
+{
+	*(int*)opaque += 1;
+}
+
+fn void test_native_classes() @test
+{
+	int freed;
+	Point[3] points = { { 3, 4 }, { 6, 8 }, { 1, 0 } };
+	{
+		Context js = qjs::open()!!;
+		defer js.close();
+		ClassId cls = js.native_class("Point", &free_point, &freed);
+		assert(js.number_method(cls, "length", &point_length, 0));
+		assert(js.number_method(cls, "scale", &point_scale, 1, null, UNDEFINED));
+		Value global = js.global();
+		defer js.release(global);
+		Value a = js.native_object(cls, &points[0]);
+		test::eq((Point*)js.opaque(a, cls), &points[0]);
+		js.set_property(global, "a", a);
+		js.set_property(global, "b", js.native_object(cls, &points[1]));
+		Value r = js.eval("a.scale(2); [a.length(), b.length(), a instanceof Object, typeof a.scale, Object.getPrototypeOf(a) === Object.getPrototypeOf(b)].join()")!!;
+		defer js.release(r);
+		String text = js.text(r);
+		defer free(text);
+		test::eq(text, "10,10,true,function,true");
+		test::eq(points[0].x, 6.0);
+		Value bad = js.eval("(() => { try { a.length.call({}) } catch (e) { return e.constructor.name + ': ' + e.message } })()")!!;
+		defer js.release(bad);
+		String message = js.text(bad);
+		defer free(message);
+		test::eq(message, "TypeError: Point.length called on an object that is not a live Point");
+		// An unreachable instance is finalized by a collection.
+		Value temp = js.native_object(cls, &points[2]);
+		js.release(temp);
+		js.eval("for (let i = 0; i < 1000; i++) ({ i })")!!;
+		js.collect();
+		js.collect();
+		test::eq(freed, 1);
+		// Clearing the data makes methods throw and skips the finalizer.
+		Value b = js.eval("b")!!;
+		assert(js.set_opaque(b, cls, null));
+		js.release(b);
+		if (try js.eval("b.length()")) assert(false, "should throw");
+		String gone = js.exception();
+		defer free(gone);
+		assert(gone.starts_with("TypeError"), "got %s", gone);
+	}
+	// Closing finalizes the rest: a, but not b, whose data was cleared.
+	test::eq(freed, 2);
+}
+
+fn void test_atoms_keys_views() @test
+{
+	Context js = qjs::open()!!;
+	defer js.close();
+	Value o = js.eval("({ x: 1.5, name: 'n', on: true, 0: 'zero', nested: { y: 2 } })")!!;
+	defer js.release(o);
+	Atom x = js.atom("x");
+	Atom on = js.atom("on");
+	Atom zero = js.atom("0");
+	Atom missing = js.atom("missing");
+	test::eq(js.get_number(o, x), 1.5);
+	test::eq(js.get_number(o, missing, -1), -1.0);
+	test::eq(js.get_number(o, on, -1), -1.0);
+	assert(js.get_bool(o, on));
+	assert(!js.get_bool(o, missing));
+	Value z = js.get(o, zero);
+	defer js.release(z);
+	String zt = js.text(z);
+	defer free(zt);
+	test::eq(zt, "zero");
+	assert(js.set(o, x, qjs::int_value(7)));
+	test::eq(js.get_number(o, x), 7.0);
+	Value keys = js.keys(o);
+	defer js.release(keys);
+	String kj = js.json(keys);
+	defer free(kj);
+	test::eq(kj, `["0","x","name","on","nested"]`);
+
+	Value f = js.eval("new Float32Array([1, 2, 3, 4]).subarray(1, 3)")!!;
+	defer js.release(f);
+	View v = js.view(f)!!;
+	test::eq(v.kind, qjs::ARRAY_FLOAT32);
+	test::eq(v.len, (usz)2);
+	test::eq(v.byte_len, (usz)8);
+	test::eq(((float*)v.ptr)[1], 3.0f);
+	Value buf = js.eval("new ArrayBuffer(16)")!!;
+	defer js.release(buf);
+	View bv = js.view(buf)!!;
+	test::eq(bv.kind, qjs::VIEW_BUFFER);
+	test::eq(bv.len, (usz)16);
+	Value dv = js.eval("new DataView(new ArrayBuffer(8), 2)")!!;
+	defer js.release(dv);
+	test::eq(js.view(dv)!!.kind, qjs::VIEW_DATA);
+	test::eq(js.view(dv)!!.len, (usz)6);
+	if (try js.view(o)) assert(false, "not a view");
+	js.detach(buf);
+	if (try js.view(buf)) assert(false, "detached");
+}
+
+fn void test_promise_state_and_async_eval() @test
+{
+	Context js = qjs::open()!!;
+	defer js.close();
+	Value done = js.eval("Promise.resolve(5)")!!;
+	defer js.release(done);
+	Value failed = js.eval("Promise.reject(new Error('nope'))")!!;
+	defer js.release(failed);
+	Value pending = js.eval("new Promise(() => {})")!!;
+	defer js.release(pending);
+	assert(js.promise_state(done) == FULFILLED);
+	assert(js.promise_state(failed) == REJECTED);
+	assert(js.promise_state(pending) == PENDING);
+	assert(js.promise_state(qjs::int_value(1)) == NOT_A_PROMISE);
+	test::eq(js.number(js.promise_result(done)), 5.0);
+	Value reason = js.promise_result(failed);
+	defer js.release(reason);
+	Value message = js.property(reason, "message");
+	defer js.release(message);
+	String text = js.text(message);
+	defer free(text);
+	test::eq(text, "nope");
+	assert(js.promise_result(pending).is_undefined());
+	// Reading the rejection handled it.
+	ulong unused;
+	assert(!js.vm().take_unhandled((void*)&unused));
+
+	// Async scripts: await and return at top level, declarations stay local.
+	for (int i = 0; i < 2; i++)
+	{
+		Value p = js.eval("const a = 40;\nawait null;\nreturn a + 2;", "async.js", qjs::EVAL_ASYNC)!!;
+		defer js.release(p);
+		assert(js.promise_state(p) == PENDING);
+		while (js.jobs_waiting()) js.step_job();
+		assert(js.promise_state(p) == FULFILLED);
+		test::eq(js.number(js.promise_result(p)), 42.0);
+	}
+	Value thrown = js.eval("await 1;\n\nthrow new Error('late');", "late.js", qjs::EVAL_ASYNC)!!;
+	defer js.release(thrown);
+	while (js.jobs_waiting()) js.step_job();
+	assert(js.promise_state(thrown) == REJECTED);
+	Value err = js.promise_result(thrown);
+	defer js.release(err);
+	Value stack = js.property(err, "stack");
+	defer js.release(stack);
+	String st = js.text(stack);
+	defer free(st);
+	assert(st.contains("late.js:3"), "got %s", st);
+	if (try js.eval("let = ;", "bad.js", qjs::EVAL_ASYNC)) assert(false, "should not compile");
+	String syntax = js.exception();
+	defer free(syntax);
+	assert(syntax.contains("bad.js:1:"), "got %s", syntax);
 }

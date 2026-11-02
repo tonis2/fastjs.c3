@@ -23,16 +23,19 @@ fn void CompileError.set(&self, String message, uint line, uint col)
 
  @param [&inout] vm : "The VM the script will run in"
  @param [&out] err : "Filled in when compiling fails"
+ @param async_body : "Compile source as the body of an async function and call it: `await` and `return` work at top level, declarations stay local, and the script's value is the call's promise"
  @return? COMPILE_ERROR
 *>
-fn Script*? compile_script(Vm* vm, String source, String name, CompileError* err)
+fn Script*? compile_script(Vm* vm, String source, String name, CompileError* err, bool async_body = false)
 {
 	DynamicArenaAllocator arena;
 	arena.init(mem, 64 * 1024);
 	defer arena.free();
 
+	// The wrapper sits on a line of its own, numbered 0, so positions in source stay exact.
+	if (async_body) source = string::format(&arena, "(async () => {\n%s\n})()", source);
 	Parser p;
-	p.init(&arena, source, false);
+	p.init(&arena, source, false, async_body ? 0 : 1);
 	defer p.free();
 	Node*? program = p.parse_program();
 	if (catch program)

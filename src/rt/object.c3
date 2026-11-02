@@ -55,6 +55,8 @@ enum ObjectKind : char
 	DATA_VIEW,
 	// A Proxy of a non-callable target (a proxy of a function is a FUNCTION).
 	PROXY,
+	// A JsNative: an object carrying an embedding host's data.
+	NATIVE,
 }
 
 struct JsObject
@@ -419,6 +421,8 @@ fn void finalize(GcHeader* h)
 					free(((JsCoroutine*)o).regs);
 				case PROMISE:
 					((JsPromise*)o).reactions.free();
+				case NATIVE:
+					finalize_native((JsNative*)o);
 				default:
 					break;
 			}

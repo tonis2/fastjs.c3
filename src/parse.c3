@@ -29,10 +29,10 @@ struct Parser
 <*
  Prepare to parse src. Nodes are allocated from arena; call free() when done with the parser.
 *>
-fn void Parser.init(&self, Allocator arena, String src, bool is_module)
+fn void Parser.init(&self, Allocator arena, String src, bool is_module, uint first_line = 1)
 {
 	*self = { .src = src, .arena = arena, .is_module = is_module };
-	self.lx.init(src);
+	self.lx.init(src, first_line);
 	self.scratch.init(mem);
 }
 

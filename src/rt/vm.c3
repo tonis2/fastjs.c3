@@ -173,6 +173,10 @@ struct Vm
 	DString* output;
 	// Values the host keeps alive (handles).
 	List {Value} roots;
+	// Kinds of host objects, by id (see host.c3).
+	List {NativeClass*} native_classes;
+	// A fast host function raised an exception (see native_fast_call).
+	bool host_raised;
 	// Native functions currently on the C stack; collection waits until there are none.
 	uint native_depth;
 	usz gc_min_threshold;
@@ -213,6 +217,7 @@ fn void? Vm.init(&self, usz memory_limit = 0)
 	self.slot_const.init(mem);
 	self.scripts.init(mem);
 	self.roots.init(mem);
+	self.native_classes.init(mem);
 	self.owned_names.init(mem);
 	self.regex_cache.init(mem);
 	self.jobs.init(mem);
@@ -259,7 +264,14 @@ fn void Vm.free(&self)
 	self.slot_const.free();
 	free(self.stack);
 	free(self.frames);
+	// Finalizers in the heap still read their classes.
 	self.heap.free();
+	foreach (c : self.native_classes)
+	{
+		free(c.name);
+		free(c);
+	}
+	self.native_classes.free();
 }
 
 fn Value? Vm.atom_value(&self, String name) => string_value(self.heap.atom(name)!);

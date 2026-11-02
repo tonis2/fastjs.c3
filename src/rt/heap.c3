@@ -70,7 +70,7 @@ fn void Heap.free(&self)
 
 // Memory that objects grew or released outside their blocks since the heap last looked. Growth
 // sites (slots, elements, tables) don't know their heap, so they count here and the heap folds it
-// in at its next allocation or safe point.
+// in at its next allocation or collection.
 tlocal sz growth;
 
 <*

@@ -38,7 +38,8 @@ fn void Vm.maybe_gc(&self) @inline
 		self.sweep_step(min(self.heap.sweep_credit * 2, SWEEP_SLICE));
 		self.heap.sweep_credit = 0;
 	}
-	self.heap.take_growth();
+	// Growth outside blocks is folded in by the next allocation, not here: this runs at every
+	// backward jump, and touching the counter here made a plain loop 4x slower.
 	if (self.heap.bytes - self.heap.dead_pending >= self.heap.threshold && self.native_depth == 0) self.collect();
 }
 
@@ -91,6 +92,7 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 	foreach (p : self.error_protos) mark_ptr(stack, p);
 	foreach (v : self.slots) mark_value(stack, v);
 	foreach (v : self.roots) mark_value(stack, v);
+	foreach (c : self.native_classes) mark_ptr(stack, c.proto);
 	mark_ptr(stack, self.heap.null_root);
 	mark_ptr(stack, self.symbol_proto);
 	mark_ptr(stack, self.iterator_proto);

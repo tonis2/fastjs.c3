@@ -151,16 +151,18 @@ struct Lexer
 	String error;
 	uint error_line;
 	uint error_col;
+	uint first_line;
 }
 
 <*
  Start lexing src. The lexer borrows src; it must outlive every token.
 
+ @param first_line : "The line number of src's first line; 0 when a host wrapper line precedes the real source"
  @require src.len < uint::max : "Source too large"
 *>
-fn void Lexer.init(&self, String src)
+fn void Lexer.init(&self, String src, uint first_line = 1)
 {
-	*self = { .src = src, .line = 1 };
+	*self = { .src = src, .line = first_line, .first_line = first_line };
 }
 
 fn bool TokenKind.is_keyword(self) => self.ordinal >= TokenKind.KW_BREAK.ordinal && self.ordinal <= TokenKind.KW_WITH.ordinal;
@@ -205,7 +207,7 @@ fn void Token.regex_parts(&self, String src, String* pattern, String* flags)
 fn fault Lexer.fail(&self, uint at, String message)
 {
 	// Recounted from the start: `at` may sit lines before the current position.
-	uint line = 1;
+	uint line = self.first_line;
 	uint line_start = 0;
 	for (uint i = 0; i < at; i++)
 	{

@@ -722,7 +722,32 @@ Tests:
   succeeds; a script that retains 4 MiB throws RangeError.
 - A `test/js` case under `--gc-stress`.
 
-### Milestone 11 — The new embedding API (fastjs side)
+### Milestone 11 — The new embedding API (fastjs side) (done)
+- [x] Done 2026-11-02, all in `src/api/qjs.c3` over `src/rt/host.c3`, with an `api_test` case
+      each:
+  - `number_function`, and `number_method` on a `native_class`, through `native_fast_call`
+  - `native_object`, `opaque`, `set_opaque`, `class_prototype` (ObjectKind `NATIVE`, a
+    finalizer per class)
+  - `atom`, `get`, `get_number`, `get_bool`, `set`, `keys`, `view`
+  - `promise_state`, `promise_result` (reading a rejection handles it), and `EVAL_ASYNC`
+    (source wrapped in an async arrow on a line numbered 0, so positions stay exact)
+  - `bench/crossing.c3` (`c3c build crossing -O3 --safe=no`), cost per call above an empty
+    loop's 8 ns per iteration:
+
+    | call | ns |
+    |---|---|
+    | `H.host(i, 1)`, a quickjs-style host function | 14.7 |
+    | `H.fast(i, 1)`, `number_function` | 14.8 |
+    | `t.get(i)`, `number_method` | 13.5 |
+    | `H.js(i, 1)`, a JS arrow | 18.2 |
+  - **Finding:** fastjs's plain host-function path is already as cheap as the typed one; both
+    are well under the 20 ns target. QuickJS's 143–380 ns came from QuickJS. What the new
+    API removes in three.c3 is the host-side work per call: handle scans, result arrays,
+    string keys.
+  - **Regression caught on the way:** M10 folded the thread-local growth counter in
+    `maybe_gc`, which runs at every backward jump; a plain counting loop went 4× slower and
+    `bench/run.sh` didn't show it. `maybe_gc` must stay one compare.
+- Original plan:
 
 All in `src/api/qjs.c3` (module `fastjs::qjs`), plus small VM hooks. Each gets `api_test` coverage.
 
@@ -1105,6 +1130,8 @@ See **Phases** above. Break each one down when it starts.
 - 2026-11-02: Phases 10–16 planned with the user (see above). Milestone 10, the memory limit
   that collects first, is done; `c3c test`: 52 pass.
   - **Next:** milestone 11, the new embedding API.
+- 2026-11-02: Milestone 11 done (the new API). `c3c test`: 56 pass.
+  - **Next:** milestone 12, error messages naming the callee.
 
 **How to run things:**
 ```sh

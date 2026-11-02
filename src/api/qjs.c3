@@ -29,13 +29,23 @@ const int TAG_FLOAT64 = 8;
 
 const int EVAL_GLOBAL = 0;
 const int EVAL_MODULE = 1;
+// fastjs only: the source is the body of an async function, called at once. `await` and
+// `return` work at top level and the value is the call's promise.
+const int EVAL_ASYNC = 2;
 
-// Element types for `Context.typed_array`, in quickjs's numbering.
+// Element types for `Context.typed_array` and `View.kind`, in quickjs's numbering.
+const int ARRAY_UINT8C = 0;
+const int ARRAY_INT8 = 1;
 const int ARRAY_UINT8 = 2;
+const int ARRAY_INT16 = 3;
+const int ARRAY_UINT16 = 4;
 const int ARRAY_INT32 = 5;
 const int ARRAY_UINT32 = 6;
 const int ARRAY_FLOAT32 = 10;
 const int ARRAY_FLOAT64 = 11;
+// `View.kind` for the views that aren't typed arrays.
+const int VIEW_BUFFER = -1;
+const int VIEW_DATA = -2;
 
 <*
  A JS value: the engine's own 8-byte NaN-boxed representation, as a type of its own so its
@@ -171,7 +181,7 @@ fn Value? Context.eval(&self, String source, String name = "<eval>", int type = 
 		return self.own(promise);
 	}
 	CompileError err;
-	Script*? script = compile::compile_script(vm, source, name, &err);
+	Script*? script = compile::compile_script(vm, source, name, &err, type == EVAL_ASYNC);
 	if (catch script)
 	{
 		(void)vm.throw_error(SYNTAX_ERROR, "%s\n    at %s:%d:%d", err.message, name, err.line, err.col);
@@ -659,7 +669,10 @@ fn Value Context.error(&self, String message)
 *>
 fn Value Context.raise(&self, String message)
 {
-	(void)self.vm().throw_error(ERROR, "%s", message);
+	Vm* vm = self.vm();
+	(void)vm.throw_error(ERROR, "%s", message);
+	// What a fast host function's caller checks, since a double can't say it threw.
+	vm.host_raised = true;
 	return EXCEPTION;
 }
 
@@ -704,3 +717,302 @@ fn void Context.collect(&self)
  Install the module hooks, or clear them with null. They must outlive the engine.
 *>
 fn void Context.on_modules(&self, ModuleHooks* hooks) => self.vm().module_hooks = hooks;
+
+// ---- fastjs additions: fast host calls, host objects, atoms, views, promise state ----
+
+alias NumberFn = rt::FastNumberFn;
+alias MethodFn = rt::FastMethodFn;
+alias Finalizer = rt::NativeFinalizer;
+alias Returns = rt::FastReturns;
+
+<*
+ A kind of host object (see native_class).
+*>
+typedef ClassId = uint;
+
+<*
+ A property name looked up once, so reading or writing it costs no string work.
+*>
+typedef Atom = ulong;
+
+excuse NOT_A_VIEW;
+
+<*
+ Where a typed array, DataView or ArrayBuffer keeps its bytes. Borrowed: valid until the next
+ call into the engine that could detach or collect the buffer.
+*>
+struct View
+{
+	// An ARRAY_* constant for a typed array, else VIEW_BUFFER or VIEW_DATA.
+	int kind;
+	char* ptr;
+	// Elements for a typed array, bytes otherwise.
+	usz len;
+	usz byte_len;
+}
+
+enum PromiseState
+{
+	NOT_A_PROMISE,
+	PENDING,
+	FULFILLED,
+	REJECTED,
+}
+
+fn String Context.keep_name(&self, ZString name)
+{
+	String copied = name.str_view().copy(mem);
+	self.vm().owned_names.push(copied);
+	return copied;
+}
+
+<*
+ A JS function that calls body with its arguments as numbers, owned. Calling it boxes nothing:
+ arguments that aren't numbers are converted, missing ones are NaN up to arity, and the double
+ body returns becomes a number, a boolean or undefined as `returns` says. To throw, body calls
+ `raise` and returns anything.
+
+ @require arity >= 0 && arity <= (int)rt::MAX_FAST_ARGS : "Arity out of range"
+*>
+fn Value Context.number_function(&self, NumberFn body, ZString name, int arity = 0, void* opaque = null, Returns returns = NUMBER)
+{
+	JsFunction*? f = self.vm().new_fast_function(self.keep_name(name), (void*)body, (uint)arity, opaque, NUMBER, returns);
+	if (catch f) return EXCEPTION;
+	return self.own(rt::object_value(f));
+}
+
+<*
+ Add a method to class cls's prototype that calls body with `this`'s host data and its
+ arguments as numbers. Calling it on anything but a live instance of cls throws a TypeError.
+
+ @require arity >= 0 && arity <= (int)rt::MAX_FAST_ARGS : "Arity out of range"
+ @return "False when it threw"
+*>
+fn bool Context.number_method(&self, ClassId cls, ZString name, MethodFn body, int arity = 0, void* opaque = null, Returns returns = NUMBER)
+{
+	Vm* vm = self.vm();
+	NativeClass* c = vm.native_classes[(uint)cls];
+	String kept = self.keep_name(name);
+	JsFunction*? f = vm.new_fast_function(kept, (void*)body, (uint)arity, opaque, METHOD, returns, c);
+	if (catch f) return false;
+	rt::Value? key = vm.atom_value(kept);
+	if (catch key) return false;
+	if (catch vm.define(c.proto, key, rt::object_value(f), rt::METHOD_PROP)) return false;
+	return true;
+}
+
+<*
+ A new kind of host object. finalizer, when given, runs with an instance's data when the
+ instance is collected or the engine closes; it must not call into the engine.
+*>
+fn ClassId Context.native_class(&self, ZString name, Finalizer finalizer = null, void* opaque = null)
+{
+	NativeClass*? c = self.vm().new_native_class(name.str_view(), finalizer, opaque);
+	if (catch c) return (ClassId)uint::max;
+	return (ClassId)c.id;
+}
+
+<*
+ The prototype every instance of cls has, owned: where methods for it go.
+*>
+fn Value Context.class_prototype(&self, ClassId cls) => self.own(rt::object_value(self.vm().native_classes[(uint)cls].proto));
+
+<*
+ A new instance of cls carrying data, owned.
+*>
+fn Value Context.native_object(&self, ClassId cls, void* data)
+{
+	Vm* vm = self.vm();
+	JsNative*? n = vm.new_native_object(vm.native_classes[(uint)cls], data);
+	if (catch n) return EXCEPTION;
+	return self.own(rt::object_value(n));
+}
+
+<*
+ value's host data when it is an instance of cls, else null.
+*>
+fn void* Context.opaque(&self, Value value, ClassId cls) => rt::native_data_of(raw(value), self.vm().native_classes[(uint)cls]);
+
+<*
+ Replace an instance's host data; null makes its methods throw from then on, and skips the
+ finalizer.
+
+ @return "False when value is not an instance of cls"
+*>
+fn bool Context.set_opaque(&self, Value value, ClassId cls, void* data)
+{
+	rt::Value v = raw(value);
+	if (!v.is_object() || v.as_object().kind != NATIVE) return false;
+	JsNative* n = (JsNative*)v.as_object();
+	if (n.cls.id != (uint)cls) return false;
+	n.data = data;
+	return true;
+}
+
+<*
+ The atom for name. Atoms live as long as the engine.
+*>
+fn Atom Context.atom(&self, String name)
+{
+	Vm* vm = self.vm();
+	rt::Value? s = vm.atom_value(name);
+	if (catch s) return (Atom)rt::UNDEFINED;
+	rt::Value? key = vm.to_key(s);
+	if (catch key) return (Atom)rt::UNDEFINED;
+	return (Atom)key;
+}
+
+<*
+ obj[key], owned. EXCEPTION, with the exception pending, when reading it threw.
+*>
+fn Value Context.get(&self, Value object, Atom key)
+{
+	rt::Value? v = self.vm().get(raw(object), (rt::Value)key);
+	if (catch v) return EXCEPTION;
+	return self.own(v);
+}
+
+<*
+ obj[key] as a number; fallback when it is missing, not a number, or reading it threw.
+*>
+fn double Context.get_number(&self, Value object, Atom key, double fallback = 0)
+{
+	Vm* vm = self.vm();
+	rt::Value? v = vm.get(raw(object), (rt::Value)key);
+	if (catch v)
+	{
+		vm.exception = rt::EMPTY;
+		return fallback;
+	}
+	return v.is_number() ? v.as_number() : fallback;
+}
+
+<*
+ obj[key] as JS truthiness; false when reading it threw.
+*>
+fn bool Context.get_bool(&self, Value object, Atom key)
+{
+	Vm* vm = self.vm();
+	rt::Value? v = vm.get(raw(object), (rt::Value)key);
+	if (catch v)
+	{
+		vm.exception = rt::EMPTY;
+		return false;
+	}
+	return rt::truthy(v);
+}
+
+<*
+ obj[key] = value. Takes ownership of value.
+
+ @return "False when it threw"
+*>
+fn bool Context.set(&self, Value object, Atom key, Value value)
+{
+	defer self.release(value);
+	Vm* vm = self.vm();
+	rt::Value obj = raw(object);
+	if (!obj.is_object())
+	{
+		(void)vm.throw_error(TYPE_ERROR, "cannot set a property of %s", vm.describe(obj));
+		return false;
+	}
+	if (catch vm.set(obj, (rt::Value)key, raw(value))) return false;
+	return true;
+}
+
+<*
+ Object.keys(obj), owned: an array of its own enumerable string keys. EXCEPTION when it threw.
+*>
+fn Value Context.keys(&self, Value object)
+{
+	Vm* vm = self.vm();
+	rt::Value[1] args = { raw(object) };
+	vm.native_depth++;
+	rt::Value? keys = rt::native_object_keys(vm, rt::UNDEFINED, &args, null);
+	vm.native_depth--;
+	if (catch keys) return EXCEPTION;
+	return self.own(keys);
+}
+
+<*
+ Where value keeps its bytes, for a typed array, DataView or ArrayBuffer.
+
+ @return? NOT_A_VIEW : "value is none of those, or its buffer was detached"
+*>
+fn View? Context.view(&self, Value value)
+{
+	rt::Value v = raw(value);
+	if (!v.is_object()) return NOT_A_VIEW~;
+	JsObject* o = v.as_object();
+	switch (o.kind)
+	{
+		case ARRAY_BUFFER:
+			JsArrayBuffer* b = (JsArrayBuffer*)o;
+			if (!b.data && b.external) return NOT_A_VIEW~;
+			return { VIEW_BUFFER, b.data, b.byte_length, b.byte_length };
+		case TYPED_ARRAY:
+			JsTypedArray* t = (JsTypedArray*)o;
+			if (!t.data && t.buffer.external) return NOT_A_VIEW~;
+			return { typed_kind_code(t.tkind), t.data, t.length, (usz)t.length * t.tkind.size };
+		case DATA_VIEW:
+			JsTypedArray* t = (JsTypedArray*)o;
+			if (!t.data && t.buffer.external) return NOT_A_VIEW~;
+			return { VIEW_DATA, t.data, t.length, t.length };
+		default:
+			return NOT_A_VIEW~;
+	}
+}
+
+fn int typed_kind_code(TypedKind kind)
+{
+	switch (kind)
+	{
+		case INT8: return ARRAY_INT8;
+		case UINT8: return ARRAY_UINT8;
+		case UINT8_CLAMPED: return ARRAY_UINT8C;
+		case INT16: return ARRAY_INT16;
+		case UINT16: return ARRAY_UINT16;
+		case INT32: return ARRAY_INT32;
+		case UINT32: return ARRAY_UINT32;
+		case FLOAT32: return ARRAY_FLOAT32;
+		case FLOAT64: return ARRAY_FLOAT64;
+	}
+}
+
+fn JsPromise* promise_of(rt::Value v)
+{
+	if (!v.is_object() || v.as_object().kind != PROMISE) return null;
+	return (JsPromise*)v.as_object();
+}
+
+<*
+ Whether value is a promise, and how it stands.
+*>
+fn PromiseState Context.promise_state(&self, Value value)
+{
+	JsPromise* p = promise_of(raw(value));
+	if (!p) return NOT_A_PROMISE;
+	switch (p.state)
+	{
+		case PENDING: return PENDING;
+		case FULFILLED: return FULFILLED;
+		case REJECTED: return REJECTED;
+	}
+}
+
+<*
+ A settled promise's value or rejection reason, owned; undefined while it is pending. Reading a
+ rejection counts as handling it, so it isn't reported as unhandled.
+*>
+fn Value Context.promise_result(&self, Value value)
+{
+	JsPromise* p = promise_of(raw(value));
+	if (!p || p.state == PENDING) return undefined_value();
+	if (p.state == REJECTED && !p.handled)
+	{
+		self.vm().forget_unhandled(p);
+		p.handled = true;
+	}
+	return self.own(p.result);
+}
