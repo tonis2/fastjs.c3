@@ -1,0 +1,9 @@
+object true true true true
+extra undefined false
+true
+true true true P true false
+true true true
+finally
+then 2
+all [ 1, 2 ] true
+after finally 1

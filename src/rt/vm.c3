@@ -164,6 +164,9 @@ struct Vm
 	ModuleHooks* module_hooks;
 	Value sym_iterator;
 	Value sym_async_iterator;
+	Value sym_species;
+	// The Promise constructor, which derived promises of plain ones are made with.
+	Value promise_ctor;
 	ulong random_state;
 	Clock start_clock;
 	// Heap-allocated names of natives created at runtime (bound functions, getters).

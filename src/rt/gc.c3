@@ -268,6 +268,8 @@ fn void Vm.mark_roots(&self, MarkStack* stack)
 	foreach (p : self.typed_protos) mark_ptr(stack, p);
 	mark_value(stack, self.sym_iterator);
 	mark_value(stack, self.sym_async_iterator);
+	mark_value(stack, self.sym_species);
+	mark_value(stack, self.promise_ctor);
 }
 
 fn void mark_job(MarkStack* stack, Job* job)

@@ -2040,6 +2040,8 @@ fn void? Vm.init_lib(&self)
 	self.sym_async_iterator = self.new_symbol(self.str_value("Symbol.asyncIterator") ?? UNDEFINED)!;
 	self.define_value(symbol_ctor, "iterator", self.sym_iterator, {})!;
 	self.define_value(symbol_ctor, "asyncIterator", self.sym_async_iterator, {})!;
+	self.sym_species = self.new_symbol(self.str_value("Symbol.species") ?? UNDEFINED)!;
+	self.define_value(symbol_ctor, "species", self.sym_species, {})!;
 	self.define_native(self.symbol_proto, "toString", &native_symbol_to_string, 0)!;
 	self.define_getter(self.symbol_proto, "description", &native_symbol_description)!;
 

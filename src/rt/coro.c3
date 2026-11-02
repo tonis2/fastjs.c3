@@ -46,7 +46,12 @@ struct JsCoroutine
 *>
 fn JsCoroutine*? Vm.new_coroutine(&self, Frame* f, bool is_async)
 {
-	JsObject* proto = is_async ? self.object_proto : self.generator_proto;
+	JsObject* proto = self.object_proto;
+	if (!is_async)
+	{
+		Value own = self.get(object_value(f.function), self.atoms.prototype)!;
+		proto = own.is_object() ? own.as_object() : self.generator_proto;
+	}
 	JsCoroutine* c = (JsCoroutine*)self.heap.new_object(proto, COROUTINE, JsCoroutine::size) ?? self.oom()~!;
 	c.function = f.function;
 	c.nregs = f.proto.nregs;
@@ -524,10 +529,46 @@ fn Value? native_promise(Vm* vm, Value this_value, Value[] args, JsFunction* cal
 	return object_value(p);
 }
 
+<*
+ A new promise made by ctor, a Promise subclass (or Promise itself, the fast path). The
+ subclass's constructor calls super(executor), which makes a real promise with the subclass's
+ prototype; it is settled directly, so the executor's functions aren't needed.
+
+ @return? THROWN
+*>
+fn JsPromise*? Vm.new_promise_of(&self, Value ctor)
+{
+	if (ctor == self.promise_ctor || !ctor.is_function()) return self.new_promise();
+	JsFunction* executor = self.new_native("", &native_capability_executor, 2)!;
+	Value[1] args = { object_value(executor) };
+	Value made = self.construct(ctor, &args)!;
+	if (!made.is_promise()) return self.throw_error(TYPE_ERROR, "Promise subclass constructor did not make a promise")~;
+	return (JsPromise*)made.as_object();
+}
+
+fn Value? native_capability_executor(Vm* vm, Value this_value, Value[] args, JsFunction* callee) => UNDEFINED;
+
+fn Value? native_species(Vm* vm, Value this_value, Value[] args, JsFunction* callee) => this_value;
+
+<*
+ The constructor then() makes p's derived promise with: p.constructor[Symbol.species].
+
+ @return? THROWN
+*>
+fn Value? Vm.promise_species(&self, JsPromise* p)
+{
+	if (p.proto() == self.promise_proto) return self.promise_ctor;
+	Value c = self.get(object_value(p), self.atoms.constructor)!;
+	if (c.is_undefined()) return self.promise_ctor;
+	if (!c.is_object()) return self.throw_error(TYPE_ERROR, "The promise's constructor is not an object")~;
+	Value s = self.get(c, self.sym_species)!;
+	return s.is_nullish() ? self.promise_ctor : s;
+}
+
 fn Value? native_promise_then(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
 	JsPromise* p = vm.this_promise(this_value, "then")!;
-	JsPromise* derived = vm.new_promise()!;
+	JsPromise* derived = vm.new_promise_of(vm.promise_species(p)!)!;
 	vm.perform_then(p, arg(args, 0), arg(args, 1), object_value(derived));
 	return object_value(derived);
 }
@@ -578,19 +619,25 @@ fn Value? native_finally_restore(Vm* vm, Value this_value, Value[] args, JsFunct
 
 fn Value? native_promise_resolve(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
-	return object_value(vm.promise_resolve(arg(args, 0))!);
+	Value v = arg(args, 0);
+	if (this_value == vm.promise_ctor || !this_value.is_function()) return object_value(vm.promise_resolve(v)!);
+	// A subclass's resolve(v) is v itself when v was made by that subclass.
+	if (v.is_promise() && vm.get(v, vm.atoms.constructor)! == this_value) return v;
+	JsPromise* p = vm.new_promise_of(this_value)!;
+	vm.resolve_promise(p, v);
+	return object_value(p);
 }
 
 fn Value? native_promise_reject(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
-	JsPromise* p = vm.new_promise()!;
+	JsPromise* p = vm.new_promise_of(this_value)!;
 	vm.reject_promise(p, arg(args, 0));
 	return object_value(p);
 }
 
 fn Value? native_promise_with_resolvers(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
-	JsPromise* p = vm.new_promise()!;
+	JsPromise* p = vm.new_promise_of(this_value)!;
 	Value resolve;
 	Value reject;
 	vm.resolving_functions(p, &resolve, &reject)!;
@@ -616,7 +663,7 @@ const uint COMBINE_PROMISE = 2;
 
 fn Value? native_promise_combine(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
-	return object_value(vm.combine(Combinator::from_ordinal(callee.magic), arg(args, 0))!);
+	return object_value(vm.combine(Combinator::from_ordinal(callee.magic), arg(args, 0), this_value)!);
 }
 
 <*
@@ -624,10 +671,10 @@ fn Value? native_promise_combine(Vm* vm, Value this_value, Value[] args, JsFunct
 
  @return? THROWN
 *>
-fn JsPromise*? Vm.combine(&self, Combinator kind, Value iterable)
+fn JsPromise*? Vm.combine(&self, Combinator kind, Value iterable, Value ctor = EMPTY)
 {
 	Vm* vm = self;
-	JsPromise* result = vm.new_promise()!;
+	JsPromise* result = ctor == EMPTY ? vm.new_promise()! : vm.new_promise_of(ctor)!;
 	JsArray*? items = vm.iterable_to_array(iterable);
 	if (catch items)
 	{
@@ -747,6 +794,9 @@ fn void? Vm.init_coroutines(&self)
 
 	self.promise_proto = h.new_object(self.object_proto)!;
 	JsFunction* ctor = self.define_constructor("Promise", &native_promise, 1, self.promise_proto)!;
+	self.promise_ctor = object_value(ctor);
+	JsFunction* species = self.new_native("get [Symbol.species]", &native_species, 0)!;
+	self.define_accessor(ctor, self.sym_species, object_value(species), UNDEFINED, { .configurable = true })!;
 	self.define_native(self.promise_proto, "then", &native_promise_then, 2)!;
 	self.define_native(self.promise_proto, "catch", &native_promise_catch, 1)!;
 	self.define_native(self.promise_proto, "finally", &native_promise_finally, 1)!;
