@@ -1500,3 +1500,29 @@ c3c build lexcheck && T=../three.c3 && ./build/lexcheck $T/examples/*.js $T/src/
 - 2026-11-02: M18 done on the three.c3 side (branch `fastjs`): QuickJS gone, typed bindings,
   host-object handles, readable wire formats, prelude decorators, examples rewritten. 1530/1530;
   original examples byte-identical to the QuickJS build.
+- 2026-11-02: three.c3 frame timings, QuickJS vs fastjs, GPU free. Method: three.c3 482c6cf
+  (the last QuickJS commit) and main 2b7d4ca, both built with `-O3 --safe=no`. Each example
+  runs headless for 660 frames, with a system appended that averages `three.frame.ms.total`
+  over frames 61–660. The figures are the median of 3 runs, in ms, as mean / worst.
+
+  | example | QuickJS | fastjs (same script) | fastjs (rewritten example) | mean speedup |
+  |---|---|---|---|---|
+  | tank_yard | 0.464 / 1.690 | 0.118 / 0.324 | 0.121 / 0.252 | 3.9× |
+  | wumpa_run | 0.849 / 1.380 | 0.561 / 1.067 | 0.563 / 1.236 | 1.5× |
+  | fireflies | 0.195 / 0.335 | 0.127 / 0.279 | 0.126 / 0.293 | 1.5× |
+  | village | 0.063 / 0.130 | 0.045 / 0.093 | 0.046 / 0.091 | 1.4× |
+  | village_walk | 0.067 / 0.149 | 0.047 / 0.402 | 0.049 / 0.400 | 1.4× |
+  | vfx | 0.042 / 0.372 | 0.025 / 0.060 | 0.025 / 0.110 | 1.7× |
+  | storage_images | 0.549 / 0.987 | 0.550 / 1.153 | 0.551 / 0.960 | 1.0× |
+  | editor | 0.014 / 0.042 | 0.006 / 0.039 | 0.007 / 0.045 | 2.3× |
+  | alley, pop, parallax, trimsheet | ≤0.009 | ≤0.006 | ≤0.006 | — |
+
+  - Means are steady across runs (±3%).
+  - The typed bindings made the host-call-heavy scenes much faster than Phase 9 (tank_yard
+    0.302 → 0.118).
+  - The decorator rewrites cost nothing measurable.
+  - storage_images is unchanged; its frame time is not JS.
+  - village_walk's worst frame is still the GC mark (0.3–0.6 ms, varying between runs), where
+    QuickJS's is 0.15.
+  - **Next:** village_walk's worst frame (does `gc_step` in idle time hide it?), then the known
+    gaps.
