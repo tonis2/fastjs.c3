@@ -1240,14 +1240,34 @@ Each gets a `test/js/*.js` file regenerated with node (`test/js/regen.sh`).
   it.
 - **Tests:** `api_test` (13 tests) is rewritten on the new API, with typed glue for every
   parameter kind, converters, methods, getters, roots and slot reuse.
-- [ ] three.c3 (branch `fastjs`), per `~/.claude/plans/twinkling-crunching-sunbeam.md` Part B:
-  - QuickJS submodule replaced by `lib/fastjs.c3l`
-  - runtime on `Engine`; bindings as typed functions; Node/Asset native handles; wire formats
-    without the QuickJS workarounds
-  - prelude decorators; the game examples rewritten
-  - `tools/use-in-three.sh` is deleted (fastjs is a submodule there now).
-  - `bench/qjsrun` keeps QuickJS as the benchmark baseline. It builds against three.c3's
-    `lib/quickjs.c3l`, so build it from three.c3's main checkout.
+- [x] **three.c3 without QuickJS** (local branch `fastjs` in ../three.c3, 31 commits, not pushed,
+      not merged — the user merges):
+  - `lib/quickjs.c3l` replaced by the `lib/fastjs.c3l` submodule; nothing uses a QuickJS API.
+    The migration went through a temporary `qjs` shim in three.c3 (deleted at the end), so each
+    binding file moved and was tested on its own.
+  - All ~290 host functions are typed C3 functions registered with `@bind`/`@method`/`@getter`;
+    `src/js` went from 19,003 to 15,280 lines of C3.
+  - Nodes, assets, compute buffers and kernels are host objects. One Node handle per live node
+    (an id → Root map, pruned after runs and every 64 frames); the prelude hangs its Object3D on
+    it (`h.owner`), which removed the scene walks that mapped hits back to objects. Per-node verbs
+    are methods of `Node`. `_i/_g` are gone from the prelude.
+  - QuickJS workarounds removed from the wire: typed arrays cross as themselves, uniforms and
+    UI trees as objects with readable names, positional rows as records (C3 structs → objects).
+  - Prelude decorators (`decorators.js`): `@three.systems.step/frame/late`, `@three.entity`,
+    `@three.key` + `three.keys()`, `@three.owned`. Widgets no longer re-render on an unchanged
+    primitive write.
+  - All 12 examples rewritten on them except parallax, storage_images and trimsheet; bugs fixed on
+    the way: tank_yard leaked a cooldown per dead tank, fireflies gave every fly the same seed,
+    village_walk's `s` also printed frame stats.
+  - Verified: `c3c test` 1530/1530; main's original 12 examples run on the converted engine with
+    screenshots byte-identical to the QuickJS build; the rewritten examples run 900 frames clean.
+  - Found by the migration: Vulkan got a non-NUL-terminated entry point name (fastjs strings
+    are slices), and a short compute upload was over-read.
+  - Not done: per-frame timing against QuickJS (the user asked to time it later, GPU free,
+    median of 3). One unexplained glibc mutex assertion during one full run of three.c3's
+    suite (UI test) did not reproduce in four later full runs.
+- `bench/qjsrun` keeps QuickJS as the benchmark baseline. It builds against three.c3's
+  `lib/quickjs.c3l`, which now exists only on three.c3's main.
 
 ### Order and checkpoints
 
@@ -1477,3 +1497,6 @@ c3c build lexcheck && T=../three.c3 && ./build/lexcheck $T/examples/*.js $T/src/
   - `c3c test`: 60 pass. test/js: 39/39 at -O0 and at -O3 --safe=no, each with `--gc-stress`.
     Benches unchanged.
   - A typed host call is 14–16 ns, cheaper than calling a JS arrow function.
+- 2026-11-02: M18 done on the three.c3 side (branch `fastjs`): QuickJS gone, typed bindings,
+  host-object handles, readable wire formats, prelude decorators, examples rewritten. 1530/1530;
+  original examples byte-identical to the QuickJS build.
