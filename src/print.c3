@@ -411,10 +411,27 @@ fn void Printer.method(&self, Node* p)
 	self.block(p.b.a);
 }
 
+<*
+ `@a @b.c(x) @(expr) ` before a class or member.
+*>
+fn void Printer.decorators(&self, Node* list)
+{
+	if (!list) return;
+	foreach (d : list.list)
+	{
+		self.put("@");
+		if (d.flags.parenthesized) self.put("(");
+		self.expr(d);
+		if (d.flags.parenthesized) self.put(")");
+		self.put(" ");
+	}
+}
+
 fn void Printer.class_expr(&self, Node* c)
 {
 	bool wrap = !c.flags.declaration;
 	if (wrap) self.put("(");
+	self.decorators(c.decorators);
 	self.put("class");
 	if (c.name.len)
 	{
@@ -431,7 +448,9 @@ fn void Printer.class_expr(&self, Node* c)
 	foreach (m : c.list)
 	{
 		self.pad();
+		self.decorators(m.decorators);
 		if (m.flags.is_static) self.put("static ");
+		if (m.flags.accessor) self.put("accessor ");
 		if (m.flags.method)
 		{
 			self.method(m);

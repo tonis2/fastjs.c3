@@ -609,7 +609,10 @@ fn Node*? Resolver.field_function(&self, Node* cls, bool is_static)
 	bool has_fields = false;
 	foreach (m : cls.list)
 	{
-		if (m.flags.field && m.flags.is_static == is_static) has_fields = true;
+		if (m.flags.is_static != is_static) continue;
+		if (m.flags.field) has_fields = true;
+		// Instance methods' addInitializer functions run where the fields are set up.
+		if (!is_static && m.decorators) has_fields = true;
 	}
 	if (!has_fields) return null;
 	Node* f = self.synth(FUNCTION, cls, is_static ? "<static_initializer>" : "<instance_members_initializer>");
@@ -631,19 +634,31 @@ fn Node*? Resolver.field_function(&self, Node* cls, bool is_static)
 	}
 	self.func = info;
 	info.scope = self.push_scope();
+	if (cls.flags.decorated)
+	{
+		// The class's decoration state: initializers to run, accessor storage keys.
+		f.d = self.synth(IDENT, cls, DECORATION_STATE);
+		self.visit(f.d)!;
+	}
 	foreach (m : cls.list)
 	{
 		if (!m.flags.field || m.flags.is_static != is_static) continue;
 		// A computed name was evaluated once, with the class; the initializer reads it back.
-		if (m.flags.computed) self.visit(m.d)!;
+		if (m.flags.computed && !m.flags.accessor) self.visit(m.d)!;
 		self.visit(m.b)!;
 	}
 	return f;
 }
 
+// A class's hidden decoration state ('#' can't start a name in source).
+const String DECORATION_STATE = "#decorations";
+// Entries are three registers' worth of state slots each, addressed by an 8-bit operand.
+const uint MAX_DECORATED_FIELDS = 80;
+
 fn void? Resolver.visit_class(&self, Node* n)
 {
-	// The heritage expression and computed keys run in the enclosing function.
+	// Class decorators, the heritage expression and computed keys run in the enclosing function.
+	self.visit(n.decorators)!;
 	self.visit(n.a)!;
 	Scope* saved = self.scope;
 	defer self.scope = saved;
@@ -654,9 +669,28 @@ fn void? Resolver.visit_class(&self, Node* n)
 		inner.declared = true;
 	}
 	Node* ctor = null;
+	n.flags.decorated = n.decorators != null;
+	uint entries = 0;
 	foreach (m : n.list)
 	{
-		if (is_constructor_member(m)) ctor = m.b;
+		if (is_constructor_member(m))
+		{
+			if (m.decorators) return self.fail(m.decorators, "Decorators are not valid here")~;
+			ctor = m.b;
+		}
+		if (m.decorators || m.flags.accessor) n.flags.decorated = true;
+		// Decorated fields and accessors each get an entry in the decoration state.
+		if (m.flags.field && (m.decorators || m.flags.accessor))
+		{
+			if (entries == MAX_DECORATED_FIELDS) return self.fail(m, "too many decorated fields and accessors in one class")~;
+			m.number = entries++;
+		}
+		self.visit(m.decorators)!;
+	}
+	if (n.flags.decorated)
+	{
+		Binding* state = self.declare(DECORATION_STATE, CONST, n)!;
+		state.declared = true;
 	}
 	if (!ctor) ctor = self.default_constructor(n);
 	ctor.flags.class_constructor = true;
@@ -665,7 +699,7 @@ fn void? Resolver.visit_class(&self, Node* n)
 	{
 		if (!m.flags.computed) continue;
 		self.visit(m.a)!;
-		if (!m.flags.field) continue;
+		if (!m.flags.field || m.flags.accessor) continue;
 		// The key of a computed field is kept in a hidden constant of the class scope ('#' can't
 		// start a name in source), set when the class is defined.
 		String hidden = string::format(self.arena, "#field%d", i);

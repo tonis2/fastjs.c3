@@ -6,7 +6,11 @@ struct JsSymbol
 	inline GcHeader header;
 	// A string, or UNDEFINED for Symbol().
 	Value description;
+	// The storage key of an `accessor` field: no key listing shows it, and freezing skips it.
+	bool is_private;
 }
+
+fn bool Value.is_private_key(self) @inline => self.is_symbol() && self.as_symbol().is_private;
 
 fn Value symbol_value(JsSymbol* s) @inline => pointer_value(TAG_SYMBOL, s);
 fn JsSymbol* Value.as_symbol(self) @inline => (JsSymbol*)(uptr)((ulong)self & PAYLOAD_MASK);

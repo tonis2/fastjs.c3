@@ -615,7 +615,7 @@ fn FunctionProto*? Codegen.compile_function(&self, Node* node, String name)
 	}
 	if (node.flags.field)
 	{
-		self.field_initializers(node.a, node.flags.is_static)!;
+		self.field_initializers(node)!;
 		self.emit_abc(RETUNDEF, 0);
 		return self.end_function(&fs, node, name, 0, false);
 	}
@@ -2484,55 +2484,90 @@ fn void? Codegen.run_fields(&self)
 }
 
 <*
- The body of a field initializer: define each field on `this` in declaration order.
+ The body of a field initializer f: define each field on `this` in declaration order, passing
+ decorated ones through their initializers.
 *>
-fn void? Codegen.field_initializers(&self, Node* cls, bool is_static)
+fn void? Codegen.field_initializers(&self, Node* f)
 {
+	Node* cls = f.a;
+	bool is_static = f.flags.is_static;
+	// The class's decoration state, kept in a register for the whole initializer.
+	uint state = 0;
+	if (f.d)
+	{
+		state = self.alloc()!;
+		self.expr(f.d, state)!;
+		// Instance methods' addInitializer functions run first; static ones ran with the class.
+		if (!is_static) self.emit_abc(RUNINITS, 0, state, rt::DEC_INSTANCE_EXTRAS);
+	}
 	foreach (m : cls.list)
 	{
 		if (!m.flags.field || m.flags.is_static != is_static) continue;
 		uint mark = self.fs.free_reg;
 		self.fs.line = m.line;
-		if (m.flags.computed)
+		uint entry = m.decorators || m.flags.accessor ? rt::dec_entry_slot((uint)m.number) : 0;
+		String key_name = "";
+		Value key = rt::UNDEFINED;
+		if (!m.flags.computed)
 		{
-			uint kr = self.alloc()!;
-			self.expr(m.d, kr)!;
-			uint cv = self.alloc()!;
-			if (m.b)
-			{
-				self.expr(m.b, cv)!;
-			}
-			else
-			{
-				self.emit_abc(LOADUNDEF, cv);
-			}
-			self.emit_abc(INITELEM, 0, kr, cv);
-			self.release(mark);
-			continue;
+			key = self.key_const(m.a)!;
+			if (key.is_string()) key_name = key.as_string().tutf8();
 		}
-		Value key = self.key_const(m.a)!;
 		uint v = self.alloc()!;
 		if (m.b)
 		{
-			self.expr_named(m.b, v, key.is_string() ? key.as_string().tutf8() : "")!;
+			self.expr_named(m.b, v, key_name)!;
 		}
 		else
 		{
 			self.emit_abc(LOADUNDEF, v);
 		}
-		uint k = self.const_index(key)!;
-		if (k <= 255)
+		if (m.decorators) self.emit_abc(APPLYINITS, v, state, entry);
+		if (m.flags.accessor)
 		{
-			self.emit_abc(INITPROP, 0, k, v);
+			self.emit_abc(ACCESSORINIT, v, state, entry + 2);
+		}
+		else if (m.flags.computed)
+		{
+			uint kr = self.alloc()!;
+			self.expr(m.d, kr)!;
+			self.emit_abc(INITELEM, 0, kr, v);
 		}
 		else
 		{
-			uint kr = self.alloc()!;
-			self.emit_abx(LOADK, kr, k);
-			self.emit_abc(INITELEM, 0, kr, v);
+			uint k = self.const_index(key)!;
+			if (k <= 255)
+			{
+				self.emit_abc(INITPROP, 0, k, v);
+			}
+			else
+			{
+				uint kr = self.alloc()!;
+				self.emit_abx(LOADK, kr, k);
+				self.emit_abc(INITELEM, 0, kr, v);
+			}
 		}
+		// A decorated field's own addInitializer functions run once it exists.
+		if (m.decorators) self.emit_abc(RUNINITS, 0, state, entry + 1);
 		self.release(mark);
 	}
+}
+
+<*
+ The DECREC kind of a class member.
+*>
+fn uint decorated_kind(Node* m)
+{
+	uint kind;
+	switch
+	{
+		case m.flags.accessor: kind = rt::DEC_ACCESSOR;
+		case m.flags.field: kind = rt::DEC_FIELD;
+		case m.flags.getter: kind = rt::DEC_GETTER;
+		case m.flags.setter: kind = rt::DEC_SETTER;
+		default: kind = rt::DEC_METHOD;
+	}
+	return m.flags.is_static ? kind | rt::DEC_STATIC : kind;
 }
 
 fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
@@ -2540,6 +2575,13 @@ fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
 	String name = n.name.len ? n.name : name_hint;
 	uint saved = self.fs.free_reg;
 	defer self.release(saved);
+	// Class decorators come first in the source, so they are evaluated before `extends`.
+	uint decorators = 0;
+	if (n.decorators)
+	{
+		decorators = self.alloc()!;
+		self.expr(n.decorators, decorators)!;
+	}
 	// base: the constructor, base + 1: its prototype, base + 2: the parent class.
 	uint base = self.alloc(3)!;
 	bool has_extends = n.a != null;
@@ -2547,9 +2589,11 @@ fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
 	Scope* scope = n.sema;
 	self.enter_scope(scope)!;
 	Node* ctor;
+	uint entries = 0;
 	foreach (m : n.list)
 	{
 		if (is_constructor_member(m)) ctor = m.b;
+		if (m.flags.field && (m.decorators || m.flags.accessor)) entries++;
 	}
 	self.fs.line = n.line;
 	bool outer_pending = self.pending_class_fields;
@@ -2561,45 +2605,70 @@ fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
 	self.fs.protos.push(p!);
 	self.emit_abx(CLOSURE, base, (uint)self.fs.protos.len() - 1);
 	self.emit_abc(DEFCLASS, base, base + 2, has_extends ? 1 : 0);
-	// The class's own name inside its body (the scope's other bindings are hidden field keys).
+	// The class's own name inside its body (the scope's other bindings are hidden).
 	foreach (b : scope.bindings)
 	{
 		if (b.name.len && b.name[0] != '#') self.store_binding_value(b, base)!;
 	}
+	uint state = 0;
+	if (n.flags.decorated)
+	{
+		state = self.alloc()!;
+		self.emit_abc(DECSTART, state, has_extends ? base + 2 + 1 : 0, entries);
+		foreach (b : scope.bindings)
+		{
+			if (b.name == DECORATION_STATE) self.store_binding_value(b, state)!;
+		}
+	}
 	foreach (m : n.list)
 	{
-		if (m.flags.field && m.flags.computed)
-		{
-			// Evaluated now, in member order, and once for every instance.
-			uint mark = self.fs.free_reg;
-			self.fs.line = m.line;
-			uint key = self.alloc()!;
-			self.expr(m.a, key)!;
-			self.store_binding_value((Binding*)m.d.sema, key)!;
-			self.release(mark);
-			continue;
-		}
-		if (!m.flags.method || is_constructor_member(m)) continue;
+		bool is_method = m.flags.method && !is_constructor_member(m);
+		if (!is_method && !(m.flags.field && (m.flags.computed || m.decorators || m.flags.accessor))) continue;
 		uint mark = self.fs.free_reg;
 		self.fs.line = m.line;
-		uint target = m.flags.is_static ? base : base + 1;
-		uint key = self.alloc()!;
+		// state, key, decorators: the DECREC window. Decorators are evaluated before the key.
+		uint w = self.alloc(3)!;
+		if (m.decorators) self.expr(m.decorators, w + 2)!;
 		String method_name = "";
 		if (m.flags.computed)
 		{
-			self.expr(m.a, key)!;
+			self.expr(m.a, w + 1)!;
 		}
 		else
 		{
 			Value k = self.key_const(m.a)!;
-			self.load_value(key, k)!;
+			self.load_value(w + 1, k)!;
 			if (k.is_string()) method_name = k.as_string().tutf8();
 		}
-		uint fun = self.alloc()!;
-		self.closure(m.b, fun, method_name)!;
-		Op op = m.flags.getter ? DEFGETTER : m.flags.setter ? DEFSETTER : DEFMETHOD;
-		self.emit_abc(op, target, key, fun);
+		uint target = m.flags.is_static ? base : base + 1;
+		if (state) self.emit_abc(MOVE, w, state);
+		if (is_method)
+		{
+			uint fun = self.alloc()!;
+			self.closure(m.b, fun, method_name)!;
+			Op op = m.flags.getter ? DEFGETTER : m.flags.setter ? DEFSETTER : DEFMETHOD;
+			self.emit_abc(op, target, w + 1, fun);
+		}
+		else if (m.flags.accessor)
+		{
+			self.emit_abc(ACCESSORDEF, w, target, (uint)m.number);
+		}
+		else if (m.flags.computed)
+		{
+			// Evaluated now, in member order, and once for every instance.
+			self.store_binding_value((Binding*)m.d.sema, w + 1)!;
+		}
+		if (m.decorators) self.emit_abc(DECREC, w, decorated_kind(m), m.flags.field ? (uint)m.number : 0);
 		self.release(mark);
+	}
+	if (state)
+	{
+		uint w = self.alloc(3)!;
+		self.emit_abc(MOVE, w, state);
+		self.emit_abc(MOVE, w + 1, base);
+		self.emit_abc(MOVE, w + 2, base + 1);
+		self.emit_abc(DECAPPLY, w);
+		self.release(w);
 	}
 	if (n.b)
 	{
@@ -2608,6 +2677,32 @@ fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
 		self.emit_abc(SETHOME, t, base + 1);
 		self.emit_abc(SETFIELDS, base, t);
 		self.release(t);
+	}
+	// The class as decorated: what its name and the expression give.
+	uint cls = base;
+	if (state)
+	{
+		cls = self.alloc(3)!;
+		self.emit_abc(MOVE, cls, base);
+		if (decorators)
+		{
+			self.emit_abc(MOVE, cls + 1, decorators);
+		}
+		else
+		{
+			self.emit_abc(LOADUNDEF, cls + 1);
+		}
+		self.emit_abc(MOVE, cls + 2, state);
+		self.emit_abc(DECCLASS, cls);
+		if (decorators)
+		{
+			foreach (b : scope.bindings)
+			{
+				if (b.name.len && b.name[0] != '#') self.store_binding_value(b, cls)!;
+			}
+		}
+		// Static methods' addInitializer functions run before the static fields.
+		self.emit_abc(RUNINITS, base, state, rt::DEC_STATIC_EXTRAS);
 	}
 	if (n.c)
 	{
@@ -2618,5 +2713,6 @@ fn void? Codegen.class_expr(&self, Node* n, uint dest, String name_hint)
 		self.emit_abc(CALL, t, 0);
 		self.release(t);
 	}
-	if (dest != base) self.emit_abc(MOVE, dest, base);
+	if (state) self.emit_abc(RUNINITS, cls, state, rt::DEC_CLASS_EXTRAS);
+	if (dest != cls) self.emit_abc(MOVE, dest, cls);
 }

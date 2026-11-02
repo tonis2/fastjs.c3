@@ -232,6 +232,11 @@ fn Node*? Parser.parse_statement(&self, bool top_level = false)
 			return self.parse_function(&t, true, false);
 		case KW_CLASS:
 			return self.parse_class(true);
+		case AT:
+			Node* decorators = self.parse_decorators()!;
+			if (self.tok.kind == KW_EXPORT && top_level && self.is_module) return self.parse_export(decorators);
+			if (self.tok.kind != KW_CLASS) return self.fail("Decorators are not valid here")~;
+			return self.parse_class(true, decorators);
 		case KW_IF:
 			return self.parse_if();
 		case KW_FOR:
@@ -593,7 +598,7 @@ fn Node*? Parser.parse_import(&self)
 	return n;
 }
 
-fn Node*? Parser.parse_export(&self)
+fn Node*? Parser.parse_export(&self, Node* decorators = null)
 {
 	Token t = self.tok;
 	self.advance()!;
@@ -601,9 +606,13 @@ fn Node*? Parser.parse_export(&self)
 	{
 		self.advance()!;
 		Node* n = self.node(EXPORT_DEFAULT, &t);
+		decorators = self.export_decorators(decorators)!;
 		Token at = self.tok;
 		switch
 		{
+			case decorators != null:
+				n.a = self.parse_class(false, decorators)!;
+				n.a.flags.declaration = n.a.name.len > 0;
 			case at.kind == KW_FUNCTION:
 				n.a = self.parse_function(&at, false, false)!;
 				n.a.flags.declaration = n.a.name.len > 0;
@@ -617,6 +626,12 @@ fn Node*? Parser.parse_export(&self)
 		return n;
 	}
 	Node* n = self.node(EXPORT, &t);
+	decorators = self.export_decorators(decorators)!;
+	if (decorators)
+	{
+		n.a = self.parse_class(true, decorators)!;
+		return n;
+	}
 	Token at = self.tok;
 	switch
 	{
@@ -822,12 +837,67 @@ fn Node*[]? Parser.to_params(&self, Node*[] items)
 	return items;
 }
 
-fn Node*? Parser.parse_class(&self, bool declaration)
+<*
+ Decorators written before `export` or after it (`export @d class`), but not both. What follows must be a class.
+*>
+fn Node*? Parser.export_decorators(&self, Node* before)
+{
+	if (self.tok.kind == AT)
+	{
+		if (before) return self.fail("Decorators are not valid here")~;
+		before = self.parse_decorators()!;
+	}
+	if (before && self.tok.kind != KW_CLASS) return self.fail("Decorators are not valid here")~;
+	return before;
+}
+
+<*
+ Read `@x`, `@x.y`, `@x.y(args)` and `@(expr)` items into an ARRAY node.
+*>
+fn Node*? Parser.parse_decorators(&self)
+{
+	Token t = self.tok;
+	Node* list = self.node(ARRAY, &t);
+	sz m = self.scratch.len();
+	while (self.tok.kind == AT)
+	{
+		self.advance()!;
+		Token at = self.tok;
+		Node* e;
+		if (at.kind == LPAREN)
+		{
+			self.advance()!;
+			e = self.parse_expression()!;
+			self.expect(RPAREN)!;
+			e.flags.parenthesized = true;
+		}
+		else
+		{
+			if (at.kind != IDENT) return self.unexpected()~;
+			self.advance()!;
+			e = self.ident_from(&at);
+			while (self.eat(DOT)!) e = self.member_name(e, false)!;
+			if (self.tok.kind == LPAREN)
+			{
+				Node* call = self.node_at(CALL, e);
+				call.a = e;
+				call.list = self.parse_arguments()!;
+				e = call;
+			}
+		}
+		self.scratch.push(e);
+	}
+	list.list = self.finish(m);
+	return list;
+}
+
+fn Node*? Parser.parse_class(&self, bool declaration, Node* decorators = null)
 {
 	Token t = self.tok;
 	self.advance()!;
 	Node* c = self.node(CLASS, &t);
 	c.flags.declaration = declaration;
+	c.decorators = decorators;
 	if (self.tok.kind == IDENT)
 	{
 		c.name = self.text();
@@ -928,8 +998,10 @@ fn Node*? Parser.parse_method(&self, Node* p)
 
 fn Node*? Parser.parse_class_member(&self)
 {
+	Node* decorators = self.tok.kind == AT ? self.parse_decorators()! : null;
 	Token t = self.tok;
 	Node* p = self.node(PROPERTY, &t);
+	p.decorators = decorators;
 	if (self.at_word("static"))
 	{
 		Token next = self.peek()!;
@@ -942,8 +1014,18 @@ fn Node*? Parser.parse_class_member(&self)
 			p.start = self.tok.start;
 		}
 	}
-	self.parse_member_modifiers(p)!;
+	if (self.at_word("accessor"))
+	{
+		Token next = self.peek()!;
+		if (starts_property_key(next.kind) && !next.nl_before)
+		{
+			self.advance()!;
+			p.flags.accessor = true;
+		}
+	}
+	if (!p.flags.accessor) self.parse_member_modifiers(p)!;
 	p.a = self.parse_property_key(p)!;
+	if (p.flags.accessor && self.tok.kind == LPAREN) return self.fail("'accessor' modifier cannot appear on a method")~;
 	if (self.tok.kind == LPAREN || p.flags.getter || p.flags.setter || p.flags.is_async || p.flags.generator)
 	{
 		p.b = self.parse_method(p)!;
@@ -1582,6 +1664,10 @@ fn Node*? Parser.parse_primary(&self)
 			return self.parse_function(&t, false, false);
 		case KW_CLASS:
 			return self.parse_class(false);
+		case AT:
+			Node* decorators = self.parse_decorators()!;
+			if (self.tok.kind != KW_CLASS) return self.fail("Decorators are not valid here")~;
+			return self.parse_class(false, decorators);
 		case KW_NEW:
 			return self.parse_new();
 		case HASH:

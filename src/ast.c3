@@ -22,7 +22,8 @@ enum NodeKind : char (String text)
 	PROPERTY { "property" },           // a: key, b: value; flags: computed shorthand method getter setter is_static field
 	FUNCTION { "function" },           // name, list: params, a: body; flags: arrow async generator expression_body declaration
 	CLASS { "class" },                 // name, a: superclass, list: PROPERTY members; flags.declaration;
-	                                   // the resolver adds b: instance-field initializer, c: static-field initializer
+	                                   // the resolver adds b: instance-field initializer, c: static-field initializer;
+	                                   // decorators: an ARRAY of decorator expressions, on CLASS and PROPERTY
 	UNARY { "unary" },                 // op, a
 	UPDATE { "update" },               // op, a; flags.prefix
 	BINARY { "binary" },               // op, a, b; includes `in` and `instanceof`
@@ -105,6 +106,10 @@ bitstruct NodeFlags : uint
 	// tagged template, the first argument of the CALL it became.
 	bool bad_escape;
 	bool tagged;
+	// A class field declared `accessor x`: a getter/setter pair over hidden per-instance storage.
+	bool accessor;
+	// Set by the resolver on a class that has decorators or accessors: it keeps a hidden decoration state.
+	bool decorated;
 }
 
 struct Node
@@ -122,6 +127,8 @@ struct Node
 	Node* c;
 	Node* d;
 	Node*[] list;
+	// Classes and class members: an ARRAY node of decorator expressions, or null.
+	Node* decorators;
 	String name;
 	double number;
 	// Filled by the resolver: a Binding for identifiers, a Scope for blocks, a FuncInfo for functions.

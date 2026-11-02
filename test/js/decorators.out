@@ -1,0 +1,92 @@
+GFG is best
+track class Critter
+new Critter() is not how a tracked class is built
+3 true critter function Critter
+4 [ 4 ] make() add(2) inc() inc() Symbol(Symbol.iterator)()
+[ 'inc', 'count' ] [ 'constructor', 'add', 'inc' ]
+getter value false false [ 'has', 'get' ]
+setter value false false [ 'has', 'set' ]
+2
+10 20
+field s true [ 'has', 'get', 'set' ]
+field a false [ 'has', 'get', 'set' ]
+field b false [ 'has', 'get', 'set' ]
+field computed false [ 'has', 'get', 'set' ]
+field c false [ 'has', 'get', 'set' ]
+30 21 6 1 NaN
+1 y undefined [] [] {}
+10 [ 'constructor', 'x', 'z' ] function
+11 true
+true
+true
+1 11
+65 100 archer
+init hp = 100
+init name = unit
+init hp = 100
+init name = unit
+1.hp: 100 -> 70
+2.name: unit -> archer
+1.hp: 70 -> 65
+true 42 false
+7
+base x derived x go true [ 'method', 'kind' ]
+eval class
+eval field
+eval static field
+eval method
+key m
+eval static method
+eval getter
+eval setter
+eval accessor
+eval static accessor
+apply static method method sm
+apply static accessor accessor sacc
+apply method method m
+apply getter getter g
+apply setter setter g
+apply accessor accessor acc
+apply static field field sf
+apply field field f
+apply class class Ordered
+init static method
+sf value
+init static field
+sacc value
+init static accessor
+init class
+defined
+init method
+init getter
+init setter
+f value
+init field
+acc value
+init accessor
+constructor
+t true 1
+anon Anon
+named Inner
+Anon Inner
+field extra false [ 'has', 'get', 'set' ]
+2 0
+class rejected number true
+class rejected string true
+class rejected object true
+class rejected null true
+method rejected number true
+method rejected string true
+method rejected object true
+method rejected null true
+field rejected number true
+field rejected string true
+field rejected object true
+field rejected null true
+accessor rejected number true
+accessor rejected string true
+accessor accepted object
+accessor rejected null true
+late addInitializer true
+bad initializer true
+0 1

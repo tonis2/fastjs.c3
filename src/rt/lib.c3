@@ -128,6 +128,7 @@ fn Value? native_object_freeze(Vm* vm, Value this_value, Value[] args, JsFunctio
 		o.shape.nodes(nodes);
 		foreach (node : nodes)
 		{
+			if (node.key.is_private_key()) continue;
 			PropFlags f = node.flags;
 			f.configurable = false;
 			if (!f.accessor) f.writable = false;
@@ -147,6 +148,7 @@ fn Value? native_object_is_frozen(Vm* vm, Value this_value, Value[] args, JsFunc
 	if (!o.frozen_extensions) return FALSE;
 	for (Shape* s = o.shape; s.parent; s = s.parent)
 	{
+		if (s.key.is_private_key()) continue;
 		if (s.flags.configurable || (!s.flags.accessor && s.flags.writable)) return FALSE;
 	}
 	return TRUE;
@@ -297,7 +299,10 @@ fn Value? native_object_get_own_property_descriptors(Vm* vm, Value this_value, V
 	Shape*[] nodes = mem::new_array(Shape*, n ? n : 1);
 	defer free(nodes);
 	o.shape.nodes(nodes);
-	foreach (node : nodes[:n]) keys.push(node.key);
+	foreach (node : nodes[:n])
+	{
+		if (!node.key.is_private_key()) keys.push(node.key);
+	}
 	foreach (key : keys)
 	{
 		Value[2] dargs = { target, key };
@@ -1987,7 +1992,10 @@ fn Value? native_reflect_own_keys(Vm* vm, Value this_value, Value[] args, JsFunc
 	Shape*[] nodes = mem::new_array(Shape*, n ? n : 1);
 	defer free(nodes);
 	o.shape.nodes(nodes);
-	foreach (node : nodes[:n]) out.push(node.key.is_int() ? string_value(vm.to_string(node.key)!) : node.key);
+	foreach (node : nodes[:n])
+	{
+		if (!node.key.is_private_key()) out.push(node.key.is_int() ? string_value(vm.to_string(node.key)!) : node.key);
+	}
 	return object_value(out);
 }
 
@@ -2017,6 +2025,8 @@ fn void? Vm.init_lib(&self)
 	self.sym_async_iterator = self.new_symbol(self.str_value("Symbol.asyncIterator") ?? UNDEFINED)!;
 	self.define_value(symbol_ctor, "iterator", self.sym_iterator, {})!;
 	self.define_value(symbol_ctor, "asyncIterator", self.sym_async_iterator, {})!;
+	self.sym_metadata = self.new_symbol(self.str_value("Symbol.metadata") ?? UNDEFINED)!;
+	self.define_value(symbol_ctor, "metadata", self.sym_metadata, {})!;
 	self.sym_species = self.new_symbol(self.str_value("Symbol.species") ?? UNDEFINED)!;
 	self.define_value(symbol_ctor, "species", self.sym_species, {})!;
 	self.sym_to_primitive = self.new_symbol(self.str_value("Symbol.toPrimitive") ?? UNDEFINED)!;

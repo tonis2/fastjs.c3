@@ -99,6 +99,15 @@ enum Op : char
 	SETHOME,        // AB   function r[a]'s home object (where `super` looks) = r[b]
 	SETFIELDS,      // AB   class r[a]'s instance-field initializer = r[b]
 	GETFIELDS,      // A    r[a] = the running constructor's instance-field initializer
+	// Decorators and `accessor` fields (decorators.c3); "state" is a class's decoration state.
+	DECSTART,       // ABC  r[a] = a new state with c field entries; b = 1 + the parent class's register, or 0
+	DECREC,         // ABC  remember a decorated element: state r[a], key r[a+1], decorators r[a+2]; b = kind | static, c = entry
+	DECAPPLY,       // A    run the element decorators: state r[a], class r[a+1], prototype r[a+2]
+	DECCLASS,       // A    r[a] = class r[a] after decorators r[a+1] (an array, or undefined); state r[a+2]
+	RUNINITS,       // ABC  call each function in state r[b] slot c, with this = r[a]
+	APPLYINITS,     // ABC  r[a] = the initializers in state r[b] slot c applied to r[a], with this = r[0]
+	ACCESSORDEF,    // ABC  an accessor field's getter and setter: state r[a], key r[a+1], target r[b]; c = entry
+	ACCESSORINIT,   // ABC  r[0]'s storage for the accessor whose key is in state r[b] slot c = r[a]
 	SUPERCALL,      // AB   like NEW, calling the parent class with this frame's new.target
 	SUPERCALLSPREAD,// A    same, arguments in an array
 	SETTHIS,        // A    this = r[a]; ReferenceError if super() already ran

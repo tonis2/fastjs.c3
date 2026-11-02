@@ -1104,7 +1104,33 @@ Each step is verified before the next:
     - Regexes under `/u` match by code point (CHAR, ANY, CLASS; pairs in literals, classes
       and `\uD83D\uDE00` escapes) and accept `\p{…}`/`\P{…}`.
     - Test: `unicode.js`.
+- [x] **Milestone 17 — decorators** (TC39 proposal, as TypeScript 5, Babel and esbuild do them):
+  - On classes, methods, getters, setters, fields and `accessor` fields, with
+    `context.addInitializer`, `context.access` and `Symbol.metadata`. `@x`, `@x.y(args)` and
+    `@(expr)`, before `class` in statements and expressions and in all export forms.
+  - Each decorated class keeps a hidden state array (`#decorations`, layout in
+    `src/rt/decorators.c3`): extra initializers per kind, the metadata object, the decorated
+    elements, and three slots per decorated field or accessor (initializers, its own extra
+    initializers, the accessor's storage key).
+  - Methods and accessors are defined as usual while the body is evaluated; DECREC records the
+    decorated ones, then DECAPPLY runs the element decorators (static methods, instance methods,
+    static fields, instance fields; last decorator first) and redefines what they return.
+    DECCLASS runs the class decorators and rebinds the inner and outer class names.
+  - Static field initializers and static `addInitializer` functions run with the original class
+    as `this`; the class's own extra initializers run with the decorated one.
+  - `accessor x` stores its value under a private symbol (`JsSymbol.is_private`): never
+    enumerable, skipped by `Reflect.ownKeys`, `getOwnPropertyDescriptors`, `freeze` and
+    `isFrozen`; the getter and setter throw TypeError on objects without it.
+  - The decorator ops hold `native_depth` while they call decorators, since their C locals are
+    not GC roots.
+  - Decorators are called with `this` undefined, also for `@a.b` (esbuild and TypeScript).
+  - node can't run decorators: `test/js/regen-decorators.sh` lowers `decorators*.js`/`.mjs` with
+    esbuild 0.24 and takes node's output. Tests: `decorators.js`, `decorators_mod.mjs`,
+    `parse_test.decorators`, `vm_test.decorator_errors`.
 - [ ] Known gaps left:
+  - private `#members` (so `context.private` is always false)
+  - `Reflect.ownKeys` of a function leaves out `length` and `name` (and a plain function's
+    `prototype`), which live outside the shape
   - a computed field key is converted to a property key at each instance, not once
   - a misplaced `super` is a runtime SyntaxError, not a compile-time one
   - `/i` without `u` uses simple lower-casing rather than the spec's Canonicalize
@@ -1338,6 +1364,8 @@ See **Phases** above. Break each one down when it starts.
   (-O0, -O3, `--gc-stress`); `c3c test`: 57.
 - 2026-11-02: Labelled statements. `test/js`: 37 files pass (-O0, -O3, `--gc-stress`);
   `c3c test`: 59.
+- 2026-11-02: Decorators, including `accessor` fields (milestone 17). `test/js`: 39 files pass
+  (-O0, -O3, `--gc-stress`); `c3c test`: 61. Benchmarks unchanged.
 
 **How to run things:**
 ```sh

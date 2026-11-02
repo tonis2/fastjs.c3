@@ -1142,6 +1142,23 @@ fn Value? Vm.run(&self)
 				self.heap.touch_value(r[a]);
 			case GETFIELDS:
 				r[a] = f.function.fields_init;
+			case DECSTART:
+				uint parent = ins_b(ins);
+				r[a] = self.decoration_start(parent ? r[parent - 1] : UNDEFINED, ins_c(ins))!;
+			case DECREC:
+				self.decoration_record(r[a], ins_b(ins), self.to_key(r[a + 1])!, r[a + 2], ins_c(ins));
+			case DECAPPLY:
+				self.apply_decorations(r[a], r[a + 1], r[a + 2])!;
+			case DECCLASS:
+				r[a] = self.decorate_class(r[a], r[a + 1], r[a + 2])!;
+			case RUNINITS:
+				self.run_initializers(r[a], dec_slot(r[ins_b(ins)], ins_c(ins)))!;
+			case APPLYINITS:
+				r[a] = self.apply_initializers(r[0], dec_slot(r[ins_b(ins)], ins_c(ins)), r[a])!;
+			case ACCESSORDEF:
+				self.new_accessor_slot(r[a], r[ins_b(ins)], self.to_key(r[a + 1])!, ins_c(ins))!;
+			case ACCESSORINIT:
+				self.init_accessor_slot(r[0], dec_slot(r[ins_b(ins)], ins_c(ins)), r[a])!;
 			case SUPERCALL:
 			case SUPERCALLSPREAD:
 				uint argc = ins_b(ins);

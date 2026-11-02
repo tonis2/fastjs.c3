@@ -186,6 +186,20 @@ fn void error_positions() @test
 	check("'unterminated", "ERROR 1:1 unterminated string");
 }
 
+fn void decorators() @test
+{
+	check("@a @b.c(1) @(d) class X {}", "@a @b.c(1) @(d) class X {\n}");
+	check("class X { @a static m() {} @b accessor x = 1; static accessor y; accessor; }", "class X {\n\t@a static m() {\n\t}\n\t@b accessor x = 1;\n\tstatic accessor y;\n\taccessor;\n}");
+	check("x = @a class {};", "(x = (@a class {\n}));");
+	check("@a export class X {}", "export @a class X {\n}", true);
+	check("export default @a class {}", "export default (@a class {\n});", true);
+	check_error("@a function f() {}", "Decorators are not valid here");
+	check_error("@a let x = 1;", "Decorators are not valid here");
+	check_error("class X { accessor m() {} }", "'accessor' modifier cannot appear on a method");
+	check_error("({ @a m() {} })", "unexpected '@'");
+	check_error("@a export @b class X {}", "Decorators are not valid here", true);
+}
+
 fn void labels() @test
 {
 	check("outer: for (;;) { break outer; }", "outer: for (;;) {\n\tbreak outer;\n}");

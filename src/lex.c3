@@ -67,6 +67,7 @@ enum TokenKind : char (String text)
 	COLON { ":" },
 	ARROW { "=>" },
 	HASH { "#" },
+	AT { "@" },
 
 	LT { "<" },
 	GT { ">" },
@@ -753,6 +754,7 @@ fn void? Lexer.scan_punct(&self, Token* tok)
 		case ':': kind = COLON;
 		case '~': kind = TILDE;
 		case '#': kind = HASH;
+		case '@': kind = AT;
 		case '.':
 			if (c1 == '.' && c2 == '.')
 			{

@@ -187,7 +187,7 @@ fn void regex_rescan_of_slash_assign() @test
 fn void error_position() @test
 {
 	Lexer lx;
-	lx.init("a\n  b @");
+	lx.init("a\n  b \x01");
 	(void)lx.next()!!;
 	(void)lx.next()!!;
 	test::eq(@catch(lx.next()), lex::SYNTAX);

@@ -164,6 +164,7 @@ struct Vm
 	ModuleHooks* module_hooks;
 	Value sym_iterator;
 	Value sym_async_iterator;
+	Value sym_metadata;
 	Value sym_species;
 	Value sym_to_primitive;
 	JsObject* date_proto;

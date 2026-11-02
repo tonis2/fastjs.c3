@@ -103,6 +103,26 @@ fn void errors_have_stack_traces() @test
 	};
 }
 
+fn void decorator_errors() @test
+{
+	Vm vm;
+	vm.init()!!;
+	defer vm.free();
+	@pool()
+	{
+		test::eq(run(&vm, "class X { @d constructor() {} }"), "SyntaxError: Decorators are not valid here");
+		test::eq(run(&vm, "@d const x = 1;"), "SyntaxError: Decorators are not valid here");
+		test::eq(run(&vm, "class X { accessor m() {} }"), "SyntaxError: 'accessor' modifier cannot appear on a method");
+		// A decorator is called with this undefined, even as a member, as esbuild and TypeScript do.
+		test::eq(run(&vm, "const o = { d(c) { console.log(this === undefined); } }; @o.d class X {}"), "true");
+		String out = run(&vm, "class X { @(() => 1) m() {} }");
+		test::@check(out.starts_with("Uncaught TypeError: A method decorator's result must be a function or undefined, not 1"), "got %s", out);
+		test::eq(run(&vm, "class X { accessor a = 1; } console.log(Object.getOwnPropertyDescriptor(X.prototype, 'a').get.name);"), "get a");
+		out = run(&vm, "class X { accessor a = 1; } Object.getOwnPropertyDescriptor(X.prototype, 'a').get.call({});");
+		test::@check(out.starts_with("Uncaught TypeError: Cannot read private member from an object whose class did not declare it"), "got %s", out);
+	};
+}
+
 fn void label_errors() @test
 {
 	Vm vm;
