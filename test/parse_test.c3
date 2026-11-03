@@ -108,6 +108,11 @@ fn void templates_and_regex() @test
 	check("a / b / c;", "((a / b) / c);");
 	check("f(/=/);", "f(/=/);");
 	check_error("const s = `\\unicode`;", "invalid escape sequence in a template");
+	// A tagged template is parsed as a call; it prints back as the template it was.
+	check("tag`a${x}b${y + 1}c`;", "tag`a${x}b${(y + 1)}c`;");
+	check("String.raw`\\n${1}`;", "String.raw`\\n${1}`;");
+	check("a.b`x` + f``;", "(a.b`x` + f``);");
+	check("f`${g`in`}`;", "f`${g`in`}`;");
 }
 
 fn void classes() @test
@@ -167,6 +172,12 @@ fn void modules() @test
 	check("const x = await f();", "const x = (await f());", true);
 	check_error("import a from 'b';", "'import' is only allowed at the top level of a module");
 	check_error("export * as from 'b';", "expected 'from' but found ''b''", true);
+	// import() is an expression, in a script as in a module; import.meta and options are not.
+	check("const m = import('./x.js');", "const m = import('./x.js');");
+	check("import(name).then(f);", "import(name).then(f);", true);
+	check("async function g() { return (await import(p)).x; }", "async function g() {\n\treturn (await import(p)).x;\n}");
+	check_error("import.meta;", "import.meta is not supported", true);
+	check_error("import('./x.js', { with: {} });", "import() takes one argument; import options are not supported");
 }
 
 fn void dropped_features() @test

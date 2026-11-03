@@ -492,6 +492,27 @@ fn void Printer.object(&self, Node* n)
 	self.expr(n);
 }
 
+<*
+ tag`a${x}b`, from the CALL the parser made of it: the tag, then the strings (the first
+ argument, a TEMPLATE flagged tagged that holds only the string parts) with the remaining
+ arguments, the substitutions, put back between them.
+*>
+fn void Printer.tagged_template(&self, Node* call)
+{
+	self.object(call.a);
+	Node*[] parts = call.list[0].list;
+	self.put("`");
+	foreach (i, part : parts)
+	{
+		self.put(part.name);
+		if (i + 1 >= parts.len) break;
+		self.put("${");
+		if (i + 1 < call.list.len) self.expr(call.list[i + 1]);
+		self.put("}");
+	}
+	self.put("`");
+}
+
 fn void Printer.elements(&self, Node*[] items, bool as_pattern)
 {
 	self.put("[");
@@ -650,6 +671,11 @@ fn void Printer.expr(&self, Node* n)
 			self.expr(n.c);
 			self.put(")");
 		case CALL:
+			if (n.list.len > 0 && n.list[0].kind == TEMPLATE && n.list[0].flags.tagged)
+			{
+				self.tagged_template(n);
+				return;
+			}
 			self.object(n.a);
 			if (n.flags.optional) self.put("?.");
 			self.put("(");
