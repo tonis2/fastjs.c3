@@ -1463,8 +1463,10 @@ fn double js_round(double x)
 fn Value? native_math1(Vm* vm, Value this_value, Value[] args, JsFunction* callee)
 {
 	Value v = arg(args, 0);
-	// Integer fast paths for the rounding family.
-	if (v.is_int() && callee.magic <= 4) return v;
+	// Integer fast paths for the rounding family (floor, ceil, round, trunc: an
+	// integer is already its own answer). Not abs, whose answer for a negative
+	// integer is not itself.
+	if (v.is_int() && callee.magic <= 3) return v;
 	double x = vm.to_number(v)!;
 	double r;
 	switch (callee.magic)
