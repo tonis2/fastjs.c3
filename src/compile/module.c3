@@ -90,7 +90,19 @@ fn ModuleRecord*? compile_module(Vm* vm, String source, String name, CompileErro
 						continue;
 					}
 					Binding* b = spec.a.sema;
-					exports.push({ .name = spec.name.copy(mem), .cell = cell_of(info, b) });
+					uint cell = cell_of(info, b);
+					// `import { x } from 'm'; export { x }` is an indirect export, as
+					// `export { x } from 'm'` is. As a local one it would name this
+					// module's box for the import, which linking fills in only when it
+					// reaches this module: a module importing x from here, linked
+					// first, would find no box and no export.
+					if (m.cells[cell].imported)
+					{
+						exports.push({ .name = spec.name.copy(mem), .indirect = true, .request = m.cells[cell].request,
+							.import_name = m.cells[cell].import_name.copy(mem) });
+						continue;
+					}
+					exports.push({ .name = spec.name.copy(mem), .cell = cell });
 				}
 			case EXPORT_DEFAULT:
 				Binding* b = s.a.flags.declaration ? (s.a.kind == CLASS ? (Binding*)s.a.d.sema : find_binding(info, s.a.name)) : (Binding*)s.sema;
