@@ -91,6 +91,7 @@ enum Op : char
 	THROW,          // A    throw r[a]
 	NEWTARGET,      // A    r[a] = new.target
 	CURRENTFN,      // A    r[a] = the running function (a named function expression's own name)
+	DYNIMPORT,      // AB   r[a] = import(r[b]): a promise, resolved against the running function's source_name
 
 	DEFCLASS,       // ABC  set up class r[a] extending r[b] (c = 1 if it has `extends`); r[a+1] = its prototype
 	DEFMETHOD,      // ABC  define non-enumerable method r[c] as r[a][r[b]], with r[a] as its home object

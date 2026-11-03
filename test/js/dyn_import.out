@@ -1,0 +1,17 @@
+plain evaluated
+promise? true
+true f plain default 1 1 default,f,runs
+leaf f
+after await
+from a plain function: leaf
+side effect ran
+missing: true
+missing again: true
+syntax: SyntaxError
+throws: TypeError: body threw
+throws again: TypeError: body threw
+missing export: SyntaxError
+missing dependency: true
+still fine after: leaf
+self: self
+to string: leaf

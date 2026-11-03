@@ -698,6 +698,10 @@ fn void Printer.expr(&self, Node* n)
 			self.put("(await ");
 			self.expr(n.a);
 			self.put(")");
+		case IMPORT_CALL:
+			self.put("import(");
+			self.expr(n.a);
+			self.put(")");
 		case ARRAY_PATTERN:
 		case OBJECT_PATTERN:
 		case ASSIGN_PATTERN:

@@ -187,6 +187,11 @@ closed: only modules already inside it can import from it, so evaluate your entr
 scripts, use `set_scheme("plugin:", dir)`. For other rules, install your own hooks
 with `js.on_modules(&hooks)`.
 
+`import(specifier)` goes through the same hooks, from a module or a script, resolved
+against the name of the one it is written in. It answers a promise for the module's
+namespace; a module already loaded is not loaded or run again, and one that does not
+resolve, load, link or evaluate rejects the promise rather than throwing.
+
 ## Develop
 
 ```sh

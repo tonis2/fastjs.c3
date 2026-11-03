@@ -299,3 +299,85 @@ fn Value? eval_module(Vm* vm, String source, String name)
 	vm.link_module(m)!;
 	return vm.evaluate_module(m);
 }
+
+<*
+ `import(specifier)`, called from code in `base` (the name of the module or script the call
+ is in): a promise for the module's namespace.
+
+ The module is resolved, loaded and linked the way a static import is, against the same hooks,
+ and its body starts before this returns, as an imported module's does. A module already loaded
+ is not loaded or run again; the promise follows its first evaluation.
+
+ Nothing the specifier or the module does throws here: one that does not resolve, load or link,
+ and a body that throws, all reject the promise. Records loaded for an import that then failed
+ are dropped again, so a later import of the same name starts clean rather than finding a
+ module with half its imports.
+
+ @return? rt::THROWN : "Out of memory, or an interrupt, which a script must not be able to catch"
+*>
+fn Value? dynamic_import(Vm* vm, Value specifier, String base)
+{
+	sz mark = vm.modules.len();
+	ModuleRecord*? loaded = import_record(vm, specifier, base);
+	if (catch loaded)
+	{
+		if (vm.uncatchable) return rt::THROWN~;
+		drop_unlinked_since(vm, mark);
+		JsPromise* failed = vm.new_promise()!;
+		vm.reject_with_exception(failed);
+		return rt::object_value(failed);
+	}
+	ModuleRecord* m = loaded;
+	// Runs the body (and any import of it not yet run). The module's promise and namespace are
+	// on its record, which the collector treats as a root, so nothing here needs holding.
+	Value evaluated = vm.evaluate_module(m)!;
+	Value ns = vm.module_namespace(m)!;
+	JsPromise* result = vm.new_promise()!;
+	JsFunction* answer = vm.new_native("", &native_import_answer, 1)!;
+	answer.native_data = ns;
+	vm.perform_then((JsPromise*)evaluated.as_object(), rt::object_value(answer), rt::UNDEFINED, rt::object_value(result));
+	return rt::object_value(result);
+}
+
+<*
+ The specifier as text, resolved, loaded and linked.
+
+ @return? rt::THROWN
+*>
+fn ModuleRecord*? import_record(Vm* vm, Value specifier, String base) @local
+{
+	JsString* text = vm.to_string(specifier)!;
+	@pool()
+	{
+		String resolved = resolve_specifier(vm, base, text.tutf8())!;
+		ModuleRecord* m = vm.find_module(resolved);
+		if (!m) m = load_module_file(vm, resolved)!;
+		vm.link_module(m)!;
+		return m;
+	};
+}
+
+<*
+ Free the module records added since `mark` that never linked: what a failed import loaded.
+ Nothing linked can point at them, because linking takes in everything a module imports.
+*>
+fn void drop_unlinked_since(Vm* vm, sz mark) @local
+{
+	for (sz i = vm.modules.len(); i > mark; i--)
+	{
+		ModuleRecord* m = vm.modules[i - 1];
+		if (m.state != COMPILED) continue;
+		vm.modules.remove_at(i - 1);
+		m.free();
+	}
+}
+
+<*
+ The fulfilment handler of an import's promise: the namespace, kept in native_data.
+*>
+fn Value? native_import_answer(Vm* vm, Value this_value, Value[] args, JsFunction* callee) => callee.native_data;
+
+fn void install_dynamic_import() @init
+{
+	rt::dynamic_import_hook = &dynamic_import;
+}

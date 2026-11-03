@@ -80,6 +80,14 @@ struct ModuleRecord
 alias ModuleNormalizeFn = fn int(ZString base, ZString name, char* out, usz out_size, void* opaque);
 alias ModuleLoadFn = fn char*(ZString name, usz* len_out, void* opaque);
 
+<*
+ What `import()` runs: a promise for the module `specifier` names, resolved against `base` (the
+ name of the module or script the call is in). Set by fastjs::compile, which does the loading
+ and linking that rt cannot reach (it imports rt, not the other way round).
+*>
+alias DynamicImportFn = fn Value?(Vm* vm, Value specifier, String base);
+DynamicImportFn dynamic_import_hook;
+
 struct ModuleHooks
 {
 	ModuleNormalizeFn normalize;

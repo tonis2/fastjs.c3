@@ -1190,6 +1190,11 @@ fn void? Codegen.expr(&self, Node* e, uint dest)
 			self.expr(e.a, v)!;
 			self.fs.line = e.line;
 			self.emit_abc(AWAIT, v);
+		case IMPORT_CALL:
+			uint v = dest == DISCARD ? self.alloc()! : dest;
+			self.expr(e.a, v)!;
+			self.fs.line = e.line;
+			self.emit_abc(DYNIMPORT, v, v);
 		case SUPER:
 			return self.fail(e, "'super' keyword unexpected here")~;
 		default:

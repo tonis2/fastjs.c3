@@ -38,6 +38,7 @@ enum NodeKind : char (String text)
 	SPREAD { "spread" },               // a
 	YIELD { "yield" },                 // a (optional); flags.delegate
 	AWAIT { "await" },                 // a
+	IMPORT_CALL { "import()" },        // a: the specifier
 
 	// Patterns, produced from declarations, parameters, or a converted literal.
 	ARRAY_PATTERN { "array pattern" },   // list: patterns, ASSIGN_PATTERN, REST or HOLE

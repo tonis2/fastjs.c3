@@ -282,6 +282,8 @@ fn Node*? Parser.parse_statement(&self, bool top_level = false)
 		case KW_SWITCH:
 			return self.parse_switch();
 		case KW_IMPORT:
+			// import(...) is an expression, allowed anywhere and in scripts too.
+			if (self.peek()!.kind == LPAREN) break;
 			if (!top_level || !self.is_module) return self.fail("'import' is only allowed at the top level of a module")~;
 			return self.parse_import();
 		case KW_EXPORT:
@@ -310,6 +312,24 @@ fn Node*? Parser.parse_statement(&self, bool top_level = false)
 	Node* n = self.node(EXPR_STMT, &t);
 	n.a = self.parse_expression()!;
 	self.consume_semicolon()!;
+	return n;
+}
+
+<*
+ `import(specifier)`: a promise for the module's namespace. One argument; the options
+ argument some engines take is refused rather than ignored.
+*>
+fn Node*? Parser.parse_import_call(&self)
+{
+	Token t = self.tok;
+	self.advance()!;
+	if (self.tok.kind == DOT) return self.fail("import.meta is not supported")~;
+	if (self.tok.kind != LPAREN) return self.fail("'import' is only allowed at the top level of a module")~;
+	self.advance()!;
+	Node* n = self.node(IMPORT_CALL, &t);
+	n.a = self.parse_assignment()!;
+	if (self.eat(COMMA)! && self.tok.kind != RPAREN) return self.fail("import() takes one argument; import options are not supported")~;
+	self.expect(RPAREN)!;
 	return n;
 }
 
@@ -532,7 +552,7 @@ fn Node*? Parser.parse_import(&self)
 {
 	Token t = self.tok;
 	self.advance()!;
-	if (self.tok.kind == LPAREN || self.tok.kind == DOT) return self.fail("dynamic import() and import.meta are not supported")~;
+	if (self.tok.kind == DOT) return self.fail("import.meta is not supported")~;
 	Node* n = self.node(IMPORT, &t);
 	if (self.tok.kind == STRING)
 	{
@@ -1594,6 +1614,8 @@ fn Node*? Parser.parse_primary(&self)
 	Token t = self.tok;
 	switch (t.kind)
 	{
+		case KW_IMPORT:
+			return self.parse_import_call();
 		case NUMBER:
 			self.advance()!;
 			Node* n = self.node(NUMBER, &t);

@@ -1117,6 +1117,11 @@ fn Value? Vm.run(&self)
 				r[a] = f.new_target;
 			case CURRENTFN:
 				r[a] = object_value(f.function);
+			case DYNIMPORT:
+				// Loads, links and starts the module here; its body may run JS, as a getter's
+				// does, and r stays valid across it because the stack does not move.
+				if (!dynamic_import_hook) return self.throw_error(SYNTAX_ERROR, "import() is not available in this build")~;
+				r[a] = dynamic_import_hook(self, r[ins_b(ins)], f.proto.source_name)!;
 
 			case DEFCLASS:
 				r[a + 1] = self.define_class(r[a], r[ins_b(ins)], ins_c(ins) != 0)!;

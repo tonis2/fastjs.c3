@@ -55,6 +55,10 @@ fn int main(String[] args)
 		vm.gc_stress = true;
 		vm.heap.threshold = 0;
 	}
+	// Modules load from disk, relative to the importer: for a module's imports, and for
+	// import() in a script as much as in a module.
+	ModuleHooks hooks = { .load = &load_from_disk };
+	vm.module_hooks = &hooks;
 	foreach (path : files)
 	{
 		char[]? data = file::load(mem, path);
@@ -94,9 +98,6 @@ fn int main(String[] args)
 
 fn bool run_module(Vm* vm, String source, String path)
 {
-	ModuleHooks hooks = { .load = &load_from_disk };
-	vm.module_hooks = &hooks;
-	defer vm.module_hooks = null;
 	Value? promise = compile::eval_module(vm, source, path);
 	if (catch promise)
 	{
